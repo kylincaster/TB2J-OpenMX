@@ -261,8 +261,8 @@ class OpenmxWrapper(AbstractTB):
                 # num_orbs += num_paos * len(pao_list)
                 for index in range(num_paos):
                     for pao in pao_list:
-                        basis.append((tag, f"{pao_order + index}{pao}", "up"))
-                        basis.append((tag, f"{pao_order + index}{pao}", "down"))
+                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
+                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "down"))
 
             print(f"{tag} `{pao_input_s[symbol]}`[{len(basis)//2}]: ", end="")
             for i in range(0, len(basis), 2):
