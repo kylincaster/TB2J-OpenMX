@@ -2,6 +2,7 @@
 import argparse
 from TB2J.versioninfo import print_license
 from TB2J_OpenMX.gen_exchange import gen_exchange
+import sys
 
 def run_openmx2J():
     print_license()
@@ -55,6 +56,13 @@ def run_openmx2J():
         nargs='+')
 
     parser.add_argument(
+        "--np",
+        help="number of cpu cores to use in parallel, default: 1",
+        default=1,
+        type=int,
+    )
+
+    parser.add_argument(
         "--description",
         help=
         "add description of the calculatiion to the xml file. Essential information, like the xc functional, U values, magnetic state should be given.",
@@ -62,12 +70,41 @@ def run_openmx2J():
         default="Calculated with TB2J.\n")
 
     parser.add_argument(
+        "-D",
+        "--orb_decomposition",
+        default=False,
+        action="store_true",
+        help="whether to do orbital decomposition in the collinear and non-collinear mode. Default: False.",
+    )
+
+    parser.add_argument(
         "--fname",
         default='exchange.xml',
         type=str,
         help='exchange xml file name. default: exchange.xml')
 
+    parser.add_argument(
+        "--output_path",
+        help="The path of the output directory, default is TB2J_results",
+        type=str,
+        default="TB2J_results",
+    )
+
     args = parser.parse_args()
+    
+    if args.elements is None:
+        parser.print_help()
+        #print("Please input the magnetic elements, e.g. --elements Fe Ni")
+        sys.exit()
+    
+    include_orbs = {}
+    for element in args.elements:
+        if "_" in element:
+            elem = element.split("_")[0]
+            orb = element.split("_")[1:]
+            include_orbs[elem] = orb
+        else:
+            include_orbs[element] = None
 
     if args.elements is None:
         print("Please input the magnetic elements, e.g. --elements Fe Ni")
@@ -76,14 +113,18 @@ def run_openmx2J():
         path='./',
         prefix=args.prefix,
         kmesh=args.kmesh,
-        magnetic_elements=args.elements,
+        magnetic_elements=list(include_orbs.keys()),
+        include_orbs=include_orbs,
         Rcut=args.rcut,
         emin=args.emin,
         emax=args.emax,
         nz=args.nz,
         description=args.description,
+        output_path=args.output_path,
         use_cache=args.use_cache,
-        exclude_orbs=args.exclude_orbs)
+        np=args.np,
+        exclude_orbs=args.exclude_orbs,
+        orb_decomposition=args.orb_decomposition,)
 
 if __name__ == "__main__":
     run_openmx2J()

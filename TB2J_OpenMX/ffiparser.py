@@ -84,6 +84,8 @@ class OpenmxWrapper(AbstractTB):
         xyz_fname = os.path.join(path, prefix + ".xyz")
         fname = os.path.join(path, prefix + ".scfout")
         self.fname = fname
+        if not os.path.isfile(self.fname):
+            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{self.fname}`")
         self.R2kfactor = 2.0j * np.pi
         self.parse_scfoutput()
         self.Rdict = dict()

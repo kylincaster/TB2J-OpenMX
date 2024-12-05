@@ -6,13 +6,17 @@ import os
 def gen_exchange(path,
                  prefix='openmx',
                  magnetic_elements=[],
+                 include_orbs={},
                  kmesh=[5, 5, 5],
                  emin=-11.0,
                  emax=0.00,
                  nz=100,
                  exclude_orbs=[],
                  Rcut=None,
+                 output_path="TB2J_results",
+                 np=1,
                  use_cache=False,
+                 orb_decomposition=True,
                  description=None):
     tbmodel=OpenmxWrapper(path, prefix)
     if tbmodel.non_collinear:
@@ -30,13 +34,17 @@ prefix: {prefix}
             basis=tbmodel.basis,
             efermi=tbmodel.efermi,
             magnetic_elements=magnetic_elements,
+            include_orbs=include_orbs,
             kmesh=kmesh,
             emin=emin,
             emax=emax,
             nz=nz,
+            np=np,
+            output_path=output_path,
             exclude_orbs=exclude_orbs,
             Rcut=Rcut,
             use_cache=use_cache,
+            orb_decomposition=orb_decomposition,
             description=description)
     exchange.run()
     print("\n")
