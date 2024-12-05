@@ -7,6 +7,7 @@ def gen_exchange(path,
                  prefix='openmx',
                  magnetic_elements=[],
                  include_orbs={},
+                 dat_file = "openmx.dat",
                  kmesh=[5, 5, 5],
                  emin=-11.0,
                  emax=0.00,
@@ -18,7 +19,7 @@ def gen_exchange(path,
                  use_cache=False,
                  orb_decomposition=True,
                  description=None):
-    tbmodel=OpenmxWrapper(path, prefix)
+    tbmodel=OpenmxWrapper(path, prefix, dat_file)
     if tbmodel.non_collinear:
         Exchange=ExchangeNCL
     else:

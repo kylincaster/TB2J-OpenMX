@@ -1,15 +1,69 @@
 import os
-from cffi import FFI
 import numpy as np
 import scipy.linalg as sl
-from ase.units import Ha, Bohr, Ry
+from ase.units import Ha, Bohr
 from ase.io import read
 from ase import Atoms
 from TB2J.utils import kmesh_to_R, symbol_number
 from TB2J.myTB import AbstractTB
 import matplotlib.pyplot as plt
 from TB2J_OpenMX.cmod._scfout_parser import ffi, lib
-import copy
+from ase.data import atomic_numbers
+
+def validate_element(element_name: str) -> str:
+    """Validate if the element name exists in the atomic numbers set."""
+    element_name = element_name.strip()
+    if element_name not in atomic_numbers:
+        raise RuntimeError(f"Invalid element name: `{element_name}`")
+    return element_name
+
+def parse_integer(s: str) -> tuple[int, int]:
+    """Parse leading integer from a string and return the integer and its length."""
+    num_length = 0
+    for char in s:
+        if char.isnumeric():
+            num_length += 1
+        else:
+            break
+    
+    if num_length == 0:
+        raise RuntimeError(f"Cannot parse `{s}` as an integer")
+    return int(s[:num_length]), num_length
+
+ATOMIC_ORBITALS = {
+    "s": (1, "s",),
+    "p": (2, ("px", "py", "pz")),
+    "d": (3, ("dz2", "dx2-y2", "dxy", "dxz", "dyz")),
+    "f": (4, ("fz3", "fxz2", "fyz2", "fzx2", "fxyz", "fx3-3xy2", "f3yx2-y3")),
+    "g": (5, ("g1", "g2", "g3", "g4", "g5", "g6", "g7", "g8", "g9")),
+    "h": (6, ("h1", "h2", "h3", "h4", "h5", "h6", "h7", "h8", "h9", "h10", "h11")),
+}
+
+def parse_pao_config(pao_config: str) -> list[tuple[int, int, tuple[str, ...]]]:
+    """Parse a PAO (Pseudo Atomic Orbital) configuration string."""
+    pao_config = pao_config.strip()
+    config_length = len(pao_config)
+    position = 0
+    parsed_orbitals = []
+
+    while position < config_length:
+        orbital_type = pao_config[position]
+        if orbital_type in ATOMIC_ORBITALS:
+            try:
+                orbital_count, token_length = parse_integer(pao_config[position + 1:])
+                parsed_orbitals.append((orbital_count, *ATOMIC_ORBITALS[orbital_type]))
+                position += token_length + 1
+            except (IndexError, RuntimeError):
+                raise RuntimeError(
+                    f"Invalid PAO configuration: `{pao_config}`. Expected format like `s2p1d1`.")
+        else:
+            raise RuntimeError(
+                f"Invalid PAO configuration: `{pao_config}`. Unknown orbital type `{orbital_type}`.")
+
+    return parsed_orbitals
+
+
+
 
 # Create the dictionary mapping ctypes to np dtypes.
 ctype2dtype = {'int': 'i4', 'double': 'f8'}
@@ -78,14 +132,28 @@ def reorder_and_solve_and_back(Hk, Sk):
 
 
 class OpenmxWrapper(AbstractTB):
-    def __init__(self, path, prefix="openmx"):
+    def __init__(self, path, prefix="openmx", dat_file=None):
         self.is_siesta = False
         self.is_orthogonal = False
         xyz_fname = os.path.join(path, prefix + ".xyz")
+
+        self.dat_file = None
+        if dat_file is not None:
+            if os.path.isfile(dat_file):
+                self.dat_file = dat_file
+            else:
+                raise RuntimeError(f"Cannot find the OpenMX Script file: `{dat_file}`")
+        else:
+            dat_file = os.path.join(path, prefix + ".dat")
+            if os.path.isfile(dat_file):
+                self.dat_file = dat_file
+        
         fname = os.path.join(path, prefix + ".scfout")
         self.fname = fname
         if not os.path.isfile(self.fname):
             raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{self.fname}`")
+
+
         self.R2kfactor = 2.0j * np.pi
         self.parse_scfoutput()
         self.Rdict = dict()
@@ -138,10 +206,80 @@ class OpenmxWrapper(AbstractTB):
     def get_hamR(self, R):
         return self.H[self.Rdict[tuple(R)]]
 
-    def norbs_to_basis(self, atoms, norbs):
+    def norbs_to_basis(self, atoms: Atoms, norbs: list[int]):
+        if self.dat_file:
+            return self.basis_from_dat_file(atoms)
+        else:
+            return self._norbs_to_basis(atoms, norbs)
+
+    def basis_from_dat_file(self, atoms: Atoms):
+        """Parse the basis set configuration from a dat file and construct basis."""
+        symbols = atoms.get_chemical_symbols()
+
+        # Read lines from the dat file
+        with open(self.dat_file, 'r') as file:
+            lines = file.readlines()
+
+        # Find the indices of the atomic species definition section
+        start_index, end_index = -1, -1
+        for index, line in enumerate(lines):
+            if line.startswith('<Definition.of.Atomic.Species'):
+                start_index = index + 1
+            if line.startswith('Definition.of.Atomic.Species>'):
+                end_index = index
+                break
+
+        if start_index == -1 or end_index == -1:
+            raise RuntimeError("Cannot find paired tag `Definition.of.Atomic.Species`")
+
+        if (end_index - start_index) < len(symbols):
+            raise RuntimeError("Insufficient atomic species definitions in the file")
+
+        # Parse PAOs for each element
+        pao_definitions = {}
+        pao_input_s = {}
+        for line in lines[start_index:end_index]:
+            line = line.strip()
+            if line.startswith('#'):
+                continue
+            tokens = line.split()
+            element = validate_element(tokens[2].split('_')[0])
+            pao_input_s[element] = tokens[1].split('-')[1]
+            pao_definitions[element] = parse_pao_config(pao_input_s[element])
+        
+        # Map atomic tags to their symbols
+        atom_tags = list(symbol_number(symbols).keys())
+        self.basis = []
+        for tag, symbol in zip(atom_tags, symbols):
+            basis = []
+            if symbol not in pao_definitions:
+                raise RuntimeError(f"No PAO definition found for symbol: {symbol}")
+            
+            paos_for_symbol = pao_definitions[symbol]
+            # num_orbs = 0
+            for num_paos, pao_order, pao_list in paos_for_symbol:
+                # num_orbs += num_paos * len(pao_list)
+                for index in range(num_paos):
+                    for pao in pao_list:
+                        basis.append((tag, f"{pao_order + index}{pao}", "up"))
+                        basis.append((tag, f"{pao_order + index}{pao}", "down"))
+
+            print(f"{tag} `{pao_input_s[symbol]}`[{len(basis)//2}]: ", end="")
+            for i in range(0, len(basis), 2):
+                print(basis[i][1], end=" ")
+            print("\n")
+
+            self.basis.extend(basis)
+
+        return self.basis
+
+
+    def _norbs_to_basis(self, atoms, norbs):
         self.basis = []
         symbols = atoms.get_chemical_symbols()
+        
         sn = list(symbol_number(symbols).keys())
+        print(sn, norbs)
         for i, n in enumerate(norbs):
             for x in range(n):
                 self.basis.append((sn[i], f"orb{x+1}", "up"))

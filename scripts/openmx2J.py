@@ -11,8 +11,15 @@ def run_openmx2J():
         description=
         "openmx2J: Using magnetic force theorem to calculate exchange parameter J from openmx Hamiltonian"
     )
+
     parser.add_argument(
         '--prefix', help="prefix of the openmx files", default='openmx', type=str)
+    
+    parser.add_argument(
+        '--dat', 
+        default=None,
+        help="openmx script file", type=str)
+
     parser.add_argument(
         '--elements',
         help="elements to be considered in Heisenberg model",
@@ -112,6 +119,7 @@ def run_openmx2J():
     gen_exchange(
         path='./',
         prefix=args.prefix,
+        dat_file=args.dat,
         kmesh=args.kmesh,
         magnetic_elements=list(include_orbs.keys()),
         include_orbs=include_orbs,
