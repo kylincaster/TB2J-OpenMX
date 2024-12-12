@@ -14,11 +14,6 @@ def run_openmx2J():
 
     parser.add_argument(
         '--prefix', help="prefix of the openmx files", default='openmx', type=str)
-    
-    parser.add_argument(
-        '--dat', 
-        default=None,
-        help="openmx script file", type=str)
 
     parser.add_argument(
         '--elements',
@@ -119,7 +114,6 @@ def run_openmx2J():
     gen_exchange(
         path='./',
         prefix=args.prefix,
-        dat_file=args.dat,
         kmesh=args.kmesh,
         magnetic_elements=list(include_orbs.keys()),
         include_orbs=include_orbs,

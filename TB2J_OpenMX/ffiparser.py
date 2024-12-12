@@ -132,27 +132,20 @@ def reorder_and_solve_and_back(Hk, Sk):
 
 
 class OpenmxWrapper(AbstractTB):
-    def __init__(self, path, prefix="openmx", dat_file=None):
+    def __init__(self, path, prefix="openmx"):
         self.is_siesta = False
         self.is_orthogonal = False
         xyz_fname = os.path.join(path, prefix + ".xyz")
-
-        self.dat_file = None
-        if dat_file is not None:
-            if os.path.isfile(dat_file):
-                self.dat_file = dat_file
-            else:
-                raise RuntimeError(f"Cannot find the OpenMX Script file: `{dat_file}`")
-        else:
-            dat_file = os.path.join(path, prefix + ".dat")
-            if os.path.isfile(dat_file):
-                self.dat_file = dat_file
         
         fname = os.path.join(path, prefix + ".scfout")
         self.fname = fname
         if not os.path.isfile(self.fname):
             raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{self.fname}`")
-
+        
+        fname = os.path.join(path, prefix + ".out")
+        if not os.path.isfile(fname):
+            fname = None
+        self.openmx_outfile = fname
 
         self.R2kfactor = 2.0j * np.pi
         self.parse_scfoutput()
@@ -207,17 +200,17 @@ class OpenmxWrapper(AbstractTB):
         return self.H[self.Rdict[tuple(R)]]
 
     def norbs_to_basis(self, atoms: Atoms, norbs: list[int]):
-        if self.dat_file:
-            return self.basis_from_dat_file(atoms)
+        if self.openmx_outfile:
+            return self.basis_from_output_file(atoms)
         else:
             return self._norbs_to_basis(atoms, norbs)
 
-    def basis_from_dat_file(self, atoms: Atoms):
+    def basis_from_output_file(self, atoms: Atoms):
         """Parse the basis set configuration from a dat file and construct basis."""
         symbols = atoms.get_chemical_symbols()
 
         # Read lines from the dat file
-        with open(self.dat_file, 'r') as file:
+        with open(self.openmx_outfile, 'r') as file:
             lines = file.readlines()
 
         # Find the indices of the atomic species definition section
