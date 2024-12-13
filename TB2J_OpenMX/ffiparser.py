@@ -103,7 +103,7 @@ class OpenMXParser:
         path: str, 
         prefix: str = "openmx", 
         outpath: Optional[str] = None, 
-        allow_non_spin_polarized: bool = False
+        allow_non_spin_polarized: bool = False,
     ) -> None:
         """
         Initialize the OpenMXParser class.
@@ -113,14 +113,14 @@ class OpenMXParser:
             prefix (str): Prefix for OpenMX output files. Default is "openmx".
             outpath (Optional[str]): Path to save output data. Default is None.
             allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
+            restart (Optional[str, dict]): restart file or the an dictionary stores the results
         """
         self.non_collinear: bool = False
 
         # If a specific file is provided, read the data and set up the models
-        if os.path.isfile(path):
-            self.read_data(path)
-            return self.set_models(allow_non_spin_polarized)
-
+        if path is None:
+            return
+        
         # Construct paths for required OpenMX output files
         fname = os.path.join(path, prefix + ".scfout")
         if not os.path.isfile(fname):
@@ -154,21 +154,29 @@ class OpenMXParser:
         # Dump data if an output path is provided
         if outpath is not None:
             self.dump_data(prefix)
-
-    def read_data(self, pkl_file: str) -> None:
+    
+    def read_data(self, restart: str, allow_non_spin_polarized: bool = False) -> None:
         """
         Load serialized data from a pickle file and update instance attributes.
 
         Args:
-            pkl_file (str): Path to the pickle file containing serialized data.
+            restart (str): Path to the pickle file containing serialized data or a dictionary contained the data
+            allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
         """
-        with open(pkl_file, "rb") as f:
-            data = pickle.load(f)
-            self.__dict__.update(data)
+        if isinstance(restart, str):
+            with open(pkl_file, "rb") as f:
+                data = pickle.load(f)
+                self.__dict__.update(data)
+        elif isinstance(restart, dict):
+            self.__dict__.update(restart)
+        else:
+            raise RuntimeError(f"Unkown restart {type(restart)}: {restart}")
 
         # Determine if the calculation is non-collinear
         if getattr(self, 'SpinP_switch', 0) == 3:
             self.non_collinear = True
+        
+        self.set_models(allow_non_spin_polarized)
         
     def set_models(self, allow_non_spin_polarized: bool) -> None:
         """
@@ -180,6 +188,7 @@ class OpenMXParser:
         Raises:
             RuntimeError: If non-spin-polarized calculations are not allowed or if SpinP_switch is invalid.
         """
+
         if self.SpinP_switch == 0:
             if not allow_non_spin_polarized:
                 raise RuntimeError(
@@ -537,7 +546,7 @@ class OpenmxWrapper(AbstractTB):
             non_collinear (bool): Whether the system is non-collinear. Default is False.
         """
         self.is_siesta = False
-        self.is_orthogonal = False
+        self.is_orthogonal = (S is None)
         self.non_collinear = non_collinear
         self.H = H
         self.S = S
@@ -615,10 +624,12 @@ class OpenmxWrapper(AbstractTB):
         Returns:
             tuple: Hamiltonian and overlap matrices at the k-point.
         """
+        Sk = None
         if convention == 2:
             phase = np.exp(self.R2kfactor * (self.R @ k))
             Hk = np.einsum("rij, r->ij", self.H, phase)
-            Sk = np.einsum("rij, r->ij", self.S, phase)
+            if not self.is_orthogonal:
+                Sk = np.einsum("rij, r->ij", self.S, phase)
         elif convention == 1:
             raise NotImplementedError("Convention 1 is not implemented yet.")
         else:

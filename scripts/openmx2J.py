@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 from TB2J.versioninfo import print_license
-from TB2J_OpenMX.gen_exchange import gen_exchange
+from TB2J_OpenMX import gen_exchange_openmx
 import sys
 
 def run_openmx2J():
@@ -111,7 +111,7 @@ def run_openmx2J():
     if args.elements is None:
         print("Please input the magnetic elements, e.g. --elements Fe Ni")
         exit()
-    gen_exchange(
+    gen_exchange_openmx(
         path='./',
         prefix=args.prefix,
         kmesh=args.kmesh,

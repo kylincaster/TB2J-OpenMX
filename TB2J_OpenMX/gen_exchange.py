@@ -4,7 +4,7 @@ from TB2J.exchangeCL2 import ExchangeCL2
 import os
 
 
-def gen_exchange(path,
+def gen_exchange_openmx(path,
                  prefix='openmx',
                  magnetic_elements=[],
                  include_orbs={},
@@ -53,5 +53,5 @@ prefix: {prefix}
     print("All calculation finsihed. The results are in TB2J_results directory.")
 
 if __name__=='__main__':
-    gen_exchange(
+    gen_exchange_openmx(
         path='/home/hexu/projects/TB2J_example/OPENMX/SrMnO3_FM_SOC/', magnetic_elements=['Mn'], nz=50, Rcut=8)
