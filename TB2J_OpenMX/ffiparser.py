@@ -130,9 +130,42 @@ def reorder_and_solve_and_back(Hk, Sk):
     evecs = reorder_back_evecs(evecs)
     return evalue, evecs
 
+def parse_openmx(path, prefix="openmx", allow_non_spin_polarized = False):
+    fname = os.path.join(path, prefix + ".scfout")
+    if not os.path.isfile(fname):
+        raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fname}`")
+    fxyzname = os.path.join(path, prefix + ".xyz")
+    if not os.path.isfile(fxyzname):
+        raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fxyzname}`")
+    
+    argv0 = ffi.new("char[]", b"")
+    argv = ffi.new("char[]", bytes(fname, encoding="ascii"))
+    lib.read_scfout([argv0, argv])
+    lib.prepare_HSR()
+
+    if lib.SpinP_switch == 3:
+        tmodel = OpenmxWrapper(path, prefix, non_collinear = True, spin = None)
+    elif lib.SpinP_switch == 1:
+        tmodelup = OpenmxWrapper(path, prefix, non_collinear = False, spin = 0)
+        tmodeldn = OpenmxWrapper(path, prefix, non_collinear = False, spin = 1)
+        tmodel = (tmodelup, tmodeldn)
+    else:
+        if allow_non_spin_polarized and lib.SpinP_switch == 0:
+            tmodel = OpenmxWrapper(path, prefix, non_collinear = False, spin = 0)
+        else:
+            raise (
+                " The value of SpinP_switch is %s. Can only get J from collinear and non-collinear mode."
+                % lib.SpinP_switch
+            )
+    
+    lib.free_HSR()
+    lib.free_scfout()
+
+    return tmodel
+
 
 class OpenmxWrapper(AbstractTB):
-    def __init__(self, path, prefix="openmx"):
+    def __init__(self, path, prefix="openmx", non_collinear = True, spin = None):
         self.is_siesta = False
         self.is_orthogonal = False
         xyz_fname = os.path.join(path, prefix + ".xyz")
@@ -146,7 +179,8 @@ class OpenmxWrapper(AbstractTB):
         if not os.path.isfile(fname):
             fname = None
         self.openmx_outfile = fname
-
+        self.non_collinear = non_collinear
+        self.spin = spin
         self.R2kfactor = 2.0j * np.pi
         self.parse_scfoutput()
         self.Rdict = dict()
@@ -157,7 +191,7 @@ class OpenmxWrapper(AbstractTB):
             atoms.get_chemical_symbols(), cell=self.cell, positions=self.positions
         )
         self.norbs_to_basis(self.atoms, self.norbs)
-        self.nspin = 2
+        self.nspin = 1 + non_collinear
         self.nbasis = self.nspin * self.norb
         self._name = 'OpenMX'
         self.k_count = 0
@@ -176,8 +210,10 @@ class OpenmxWrapper(AbstractTB):
 
     def HSE_k(self, kpt, convention=2):
         Hk, Sk = self.gen_ham(tuple(kpt), convention=convention)
-        # evals, evecs = sl.eigh(Hk, Sk)
-        evals, evecs = reorder_and_solve_and_back(Hk, Sk)
+        if self.non_collinear:
+            evals, evecs = reorder_and_solve_and_back(Hk, Sk)
+        else:
+            evals, evecs = sl.eigh(Hk, Sk)
         return Hk, Sk, evals, evecs
     
     def gen_ham(self, k, convention=2):
@@ -212,13 +248,14 @@ class OpenmxWrapper(AbstractTB):
         """
         nk = len(kpts)
         hams = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        ovps = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
         evals = np.zeros((nk, self.nbasis), dtype=float)
         evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
         for ik, k in enumerate(kpts):
-            hams[ik], S, evals[ik], evecs[ik] = self.HSE_k(
+            hams[ik], ovps[ik], evals[ik], evecs[ik] = self.HSE_k(
                 tuple(k), convention=convention
             )
-        return hams, None, evals, evecs
+        return hams, ovps, evals, evecs
     
     def get_hamR(self, R):
         return self.H[self.Rdict[tuple(R)]]
@@ -278,8 +315,10 @@ class OpenmxWrapper(AbstractTB):
                 # num_orbs += num_paos * len(pao_list)
                 for index in range(num_paos):
                     for pao in pao_list:
-                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
-                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "down"))
+                        if self.spin == 0:
+                            basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
+                        else:
+                            basis.append((tag, f"{pao_order}{pao}N{index+1}", "down"))
 
             print(f"{tag} `{pao_input_s[symbol]}`[{len(basis)//2}]: ", end="")
             for i in range(0, len(basis), 2):
@@ -297,6 +336,7 @@ class OpenmxWrapper(AbstractTB):
         
         sn = list(symbol_number(symbols).keys())
         print(sn, norbs)
+        raise NotImplementedError()
         for i, n in enumerate(norbs):
             for x in range(n):
                 self.basis.append((sn[i], f"orb{x+1}", "up"))
@@ -304,23 +344,9 @@ class OpenmxWrapper(AbstractTB):
         return self.basis
 
     def parse_scfoutput(self):
-        argv0 = ffi.new("char[]", b"")
-        argv = ffi.new("char[]", bytes(self.fname, encoding="ascii"))
-        lib.read_scfout([argv0, argv])
-        lib.prepare_HSR()
         self.ncell = lib.TCpyCell + 1
         self.natom = lib.atomnum
         self.norbs = np.copy(asarray(ffi, lib.Total_NumOrbs, self.natom + 1)[1:])
-
-        if lib.SpinP_switch == 3:
-            self.non_collinear = True
-        elif lib.SpinP_switch == 1:
-            self.non_collinear = False
-        else:
-            raise ValueError(
-                " The value of SpinP_switch is %s. Can only get J from collinear and non-collinear mode."
-                % lib.SpinP_switch
-            )
 
         fnan = asarray(ffi, lib.FNAN, self.natom + 1)
 
@@ -413,13 +439,12 @@ class OpenmxWrapper(AbstractTB):
                         )
 
             self.H = np.zeros(
-                [self.ncell, lib.T_NumOrbs * 2, lib.T_NumOrbs * 2], dtype=complex
+                [self.ncell, lib.T_NumOrbs, lib.T_NumOrbs], dtype=complex
             )
 
             # up up
             for iR in range(self.ncell):
-                self.H[iR, ::2, ::2] = HR[iR, 0, :, :]
-                self.H[iR, 1::2, 1::2] = HR[iR, 1, :, :]
+                self.H[iR, :, :] = HR[iR, self.spin, :, :]
         self.efermi = lib.ChemP * Ha
         self.H *= Ha
 
@@ -427,11 +452,8 @@ class OpenmxWrapper(AbstractTB):
         for iR in range(0, self.ncell):
             for iorb in range(lib.T_NumOrbs):
                 SR[iR, iorb, :] = asarray(ffi, lib.SR[iR][iorb], norb)
-        self.S = np.kron(SR, np.eye(2))
-        lib.free_HSR()
-        lib.free_scfout()
+        self.S = SR # np.kron(SR, np.eye(2))
         print("Loading from scfout file OK!")
-
 
 def test():
     openmx = OpenmxWrapper(
