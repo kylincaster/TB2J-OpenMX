@@ -160,42 +160,66 @@ class OpenmxWrapper(AbstractTB):
         self.nspin = 2
         self.nbasis = self.nspin * self.norb
         self._name = 'OpenMX'
+        self.k_count = 0
 
-    def solve(self, k):
-        phase = np.exp(self.R2kfactor * (self.R @ k))
-        Hk = np.einsum("rij, r->ij", self.H, phase)
-        Sk = np.einsum("rij, r->ij", self.S, phase)
+    def solve(self, k, convention=2):
+        Hk, Sk = self.gen_ham(k, convention=convention)
         return sl.eigh(Hk, Sk)
 
-    def solve_all(self, kpts):
+    def solve_all(self, kpts, convention=2):
         nk = len(kpts)
-        evals = np.zeros((nk, self.norb))
-        evecs = np.zeros((nk, self.norb, self.norb), dtype=complex)
+        evals = np.zeros((nk, self.nbasis), dtype=float)
+        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
         for ik, k in enumerate(kpts):
-            evals[ik], evecs[ik] = self.solve(k)
+            evals[ik], evecs[ik] = self.solve(k, convention=convention)
         return evals, evecs
 
-    def HSE_k(self, k, convention=2):
-        phase = np.exp(self.R2kfactor * (self.R @ k))
-        Hk = np.einsum("rij, r->ij", self.H, phase)
-        Sk = np.einsum("rij, r->ij", self.S, phase)
-        # evalue, evec = sl.eigh(Hk, Sk)
-        evalue, evec = reorder_and_solve_and_back(Hk, Sk)
-        return Hk, Sk, evalue, evec
-
-    def HS_and_eigen(self, kpts):
-        nk = len(kpts)
-        evals = np.zeros((nk, self.nbasis))
-        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        Hk = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        Sk = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        for ik, k in enumerate(kpts):
-            phase = np.exp(self.R2kfactor * (self.R @ k))
-            Hk[ik] = np.einsum("rij, r->ij", self.H, phase)
-            Sk[ik] = np.einsum("rij, r->ij", self.S, phase)
-            evals[ik], evecs[ik] = sl.eigh(Hk[ik], Sk[ik])
+    def HSE_k(self, kpt, convention=2):
+        Hk, Sk = self.gen_ham(tuple(kpt), convention=convention)
+        # evals, evecs = sl.eigh(Hk, Sk)
+        evals, evecs = reorder_and_solve_and_back(Hk, Sk)
         return Hk, Sk, evals, evecs
+    
+    def gen_ham(self, k, convention=2):
+        """
+        generate hamiltonian matrix at k point.
+        H_k( i, j)=\sum_R H_R(i, j)^phase.
+        There are two conventions,
+        first:
+        phase =e^{ik(R+rj-ri)}. often better used for berry phase.
+        second:
+        phase= e^{ikR}. We use the first convention here.
 
+        :param k: kpoint
+        :param convention: 1 or 2.
+        """
+        if convention == 2:
+            phase = np.exp(self.R2kfactor * (self.R @ k))
+            Hk = np.einsum("rij, r->ij", self.H, phase)
+            Sk = np.einsum("rij, r->ij", self.S, phase)
+        elif convention == 1:
+            # TODO: implement the first convention (the r convention)
+            raise NotImplementedError("convention 1 is not implemented yet.")
+            pass
+        else:
+            raise ValueError("convention should be either 1 or 2.")
+        return Hk, Sk
+
+    def HS_and_eigen(self, kpts, convention=2):
+        """
+        calculate eigens for all kpoints.
+        :param kpts: list of k points.
+        """
+        nk = len(kpts)
+        hams = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        evals = np.zeros((nk, self.nbasis), dtype=float)
+        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        for ik, k in enumerate(kpts):
+            hams[ik], S, evals[ik], evecs[ik] = self.HSE_k(
+                tuple(k), convention=convention
+            )
+        return hams, None, evals, evecs
+    
     def get_hamR(self, R):
         return self.H[self.Rdict[tuple(R)]]
 
