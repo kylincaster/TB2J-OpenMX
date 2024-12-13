@@ -4,6 +4,17 @@ from TB2J.versioninfo import print_license
 from TB2J_OpenMX.gen_exchange import gen_exchange
 import sys
 
+def set_threads(n_threads = 1):
+    from os import environ
+    N_THREADS = str(n_threads)
+    print("set omp number threads", n_threads)
+    environ['OMP_NUM_THREADS'] = N_THREADS
+    environ['OPENBLAS_NUM_THREADS'] = N_THREADS
+    environ['MKL_NUM_THREADS'] = N_THREADS
+    environ['VECLIB_MAXIMUM_THREADS'] = N_THREADS
+    environ['NUMEXPR_NUM_THREADS'] = N_THREADS
+
+
 def run_openmx2J():
     print_license()
     print("\n")
@@ -78,7 +89,15 @@ def run_openmx2J():
         action="store_true",
         help="whether to do orbital decomposition in the collinear and non-collinear mode. Default: False.",
     )
-
+    
+    parser.add_argument(
+        "-t",
+        "--threads", 
+        help="number of threads to use in LAPACK and BLAS, default: 1",
+        default=1,
+        type=int,
+    )
+    
     parser.add_argument(
         "--fname",
         default='exchange.xml',
@@ -87,13 +106,14 @@ def run_openmx2J():
 
     parser.add_argument(
         "--output_path",
-        help="The path of the output directory, default is TB2J_results",
+        help="The path of the output directory, default is TB2J_results_CL1",
         type=str,
-        default="TB2J_results",
+        default="TB2J_results_CL1",
     )
 
     args = parser.parse_args()
-    
+    set_threads(args.threads)
+
     if args.elements is None:
         parser.print_help()
         #print("Please input the magnetic elements, e.g. --elements Fe Ni")

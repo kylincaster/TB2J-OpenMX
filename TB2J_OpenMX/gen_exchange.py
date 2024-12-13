@@ -13,7 +13,7 @@ def gen_exchange(path,
                  nz=100,
                  exclude_orbs=[],
                  Rcut=None,
-                 output_path="TB2J_results",
+                 output_path="TB2J_results_CL1",
                  np=1,
                  use_cache=False,
                  orb_decomposition=True,
@@ -46,9 +46,9 @@ prefix: {prefix}
             use_cache=use_cache,
             orb_decomposition=orb_decomposition,
             description=description)
-    exchange.run()
+    exchange.run(output_path)
     print("\n")
-    print("All calculation finsihed. The results are in TB2J_results directory.")
+    print(f"All calculation finsihed. The results are in {output_path} directory.")
 
 if __name__=='__main__':
     gen_exchange(
