@@ -72,7 +72,14 @@ def run_openmx2J():
         default=1,
         type=int,
     )
-
+    
+    parser.add_argument(
+        "-t",
+        "--threads", 
+        help="number of threads to use in LAPACK and BLAS, default: 1",
+        default=1,
+        type=int,
+    )
     parser.add_argument(
         "--description",
         help=
@@ -102,7 +109,7 @@ def run_openmx2J():
     )
 
     args = parser.parse_args()
-    set_threads(args.np)
+    set_threads(args.threads)
     if args.elements is None:
         parser.print_help()
         #print("Please input the magnetic elements, e.g. --elements Fe Ni")
