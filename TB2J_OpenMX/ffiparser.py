@@ -9,6 +9,8 @@ from TB2J.myTB import AbstractTB
 from TB2J_OpenMX.cmod._scfout_parser import ffi, lib
 from ase.data import atomic_numbers
 import pickle
+from typing import Optional
+
 
 def validate_element(element_name: str) -> str:
     """Validate if the element name exists in the atomic numbers set."""
@@ -16,6 +18,7 @@ def validate_element(element_name: str) -> str:
     if element_name not in atomic_numbers:
         raise RuntimeError(f"Invalid element name: `{element_name}`")
     return element_name
+
 
 def parse_integer(s: str) -> tuple[int, int]:
     """Parse leading integer from a string and return the integer and its length."""
@@ -25,13 +28,17 @@ def parse_integer(s: str) -> tuple[int, int]:
             num_length += 1
         else:
             break
-    
+
     if num_length == 0:
         raise RuntimeError(f"Cannot parse `{s}` as an integer")
     return int(s[:num_length]), num_length
 
+
 ATOMIC_ORBITALS = {
-    "s": (1, "s",),
+    "s": (
+        1,
+        "s",
+    ),
     "p": (2, ("px", "py", "pz")),
     "d": (3, ("dz2", "dx2-y2", "dxy", "dxz", "dyz")),
     "f": (4, ("fz3", "fxz2", "fyz2", "fzx2", "fxyz", "fx3-3xy2", "f3yx2-y3")),
@@ -50,34 +57,34 @@ def parse_pao_config(pao_config: str) -> list[tuple[int, int, tuple[str, ...]]]:
         orbital_type = pao_config[position]
         if orbital_type in ATOMIC_ORBITALS:
             try:
-                orbital_count, token_length = parse_integer(pao_config[position + 1:])
+                orbital_count, token_length = parse_integer(pao_config[position + 1 :])
                 parsed_orbitals.append((orbital_count, *ATOMIC_ORBITALS[orbital_type]))
                 position += token_length + 1
             except (IndexError, RuntimeError):
                 raise RuntimeError(
-                    f"Invalid PAO configuration: `{pao_config}`. Expected format like `s2p1d1`.")
+                    f"Invalid PAO configuration: `{pao_config}`. Expected format like `s2p1d1`."
+                )
         else:
             raise RuntimeError(
-                f"Invalid PAO configuration: `{pao_config}`. Unknown orbital type `{orbital_type}`.")
+                f"Invalid PAO configuration: `{pao_config}`. Unknown orbital type `{orbital_type}`."
+            )
 
     return parsed_orbitals
 
 
-
-
 # Create the dictionary mapping ctypes to np dtypes.
-ctype2dtype = {'int': 'i4', 'double': 'f8'}
+ctype2dtype = {"int": "i4", "double": "f8"}
 
 # Integer types
-for prefix in ('int', 'uint'):
+for prefix in ("int", "uint"):
     for log_bytes in range(4):
         ctype = "%s%d_t" % (prefix, 8 * (2**log_bytes))
         dtype = "%s%d" % (prefix[0], 2**log_bytes)
         ctype2dtype[ctype] = np.dtype(dtype)
 
 # Floating point types
-ctype2dtype['float'] = np.dtype('f4')
-ctype2dtype['double'] = np.dtype('f8')
+ctype2dtype["float"] = np.dtype("f4")
+ctype2dtype["double"] = np.dtype("f8")
 
 
 def asarray(ffi, ptr, length):
@@ -90,137 +97,182 @@ def asarray(ffi, ptr, length):
     return np.frombuffer(ffi.buffer(ptr, length * ffi.sizeof(T)), ctype2dtype[T])
 
 
-def reorder(Hk):
-    n = np.shape(Hk)[0] // 2
-    N = 2 * n
-    Hk2 = np.zeros_like(Hk)
-    Hk2[0:n, 0:n] = Hk[::2, ::2]
-    Hk2[n:N, n:N] = Hk[1::2, 1::2]
-    Hk2[0:n, n:N] = Hk[::2, 1::2]
-    Hk2[n:N, 0:n] = Hk[1::2, ::2]
-    return Hk2
-
-
-def reorder_back(Hk2):
-    n = np.shape(Hk)[0] // 2
-    N = 2 * n
-    Hk2 = np.zeros_like(Hk)
-    Hk2[::2, ::2] = Hk[0:n, 0:n]
-    Hk2[1::2, 1::2] = Hk[n:N, n:N]
-    Hk2[::2, 1::2] = Hk[0:n, n:N]
-    Hk2[1::2, ::2] = Hk[n:N, 0:n]
-    return Hk2
-
-
-def reorder_back_evecs(evecs):
-    n = np.shape(evecs)[0] // 2
-    N = 2 * n
-    evecs2 = np.zeros_like(evecs)
-    evecs2[0::2, :] = evecs[0:n, :]
-    evecs2[1::2, :] = evecs[n:N, :]
-    # evecs2[::2, 1::2] = evecs[0:n, n:N]
-    # evecs2[1::2, ::2] = evecs[n:N, 0:n]
-    return evecs2
-
-
-def reorder_and_solve_and_back(Hk, Sk):
-    Hk2 = reorder(Hk)
-    Sk2 = reorder(Sk)
-    evalue, evecs = sl.eigh(Hk2, Sk2)
-    evecs = reorder_back_evecs(evecs)
-    return evalue, evecs
-
 class OpenMXParser:
-    def __init__(self, path, prefix="openmx", outpath=None, allow_non_spin_polarized = False):
-        self.non_collinear = False
+    def __init__(
+        self, 
+        path: str, 
+        prefix: str = "openmx", 
+        outpath: Optional[str] = None, 
+        allow_non_spin_polarized: bool = False
+    ) -> None:
+        """
+        Initialize the OpenMXParser class.
+
+        Args:
+            path (str): Path to the OpenMX files or a specific pickle dump.
+            prefix (str): Prefix for OpenMX output files. Default is "openmx".
+            outpath (Optional[str]): Path to save output data. Default is None.
+            allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
+        """
+        self.non_collinear: bool = False
+
+        # If a specific file is provided, read the data and set up the models
         if os.path.isfile(path):
             self.read_data(path)
             return self.set_models(allow_non_spin_polarized)
-        
+
+        # Construct paths for required OpenMX output files
         fname = os.path.join(path, prefix + ".scfout")
         if not os.path.isfile(fname):
             raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fname}`")
-        
+
         fxyzname = os.path.join(path, prefix + ".xyz")
         if not os.path.isfile(fxyzname):
             raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fxyzname}`")
-        
-        self.openmx_outfile = os.path.join(path, prefix + ".out")
+
+        self.openmx_outfile: Optional[str] = os.path.join(path, prefix + ".out")
         if not os.path.isfile(self.openmx_outfile):
             self.openmx_outfile = None
 
-        self.outpath = outpath
-        # read the information
-        
+        self.outpath: Optional[str] = outpath
+
+        # Parse the SCF output and atomic information
         self.parse_scfoutput(fname)
         atoms = read(fxyzname)
-        self.atoms = Atoms(
-            atoms.get_chemical_symbols(), cell=self.cell, positions=self.positions
+        self.atoms: Atoms = Atoms(
+            symbols=atoms.get_chemical_symbols(), 
+            cell=self.cell, 
+            positions=self.positions
         )
+
+        # Map orbitals to atomic basis functions
         self.norbs_to_basis(self.atoms, self.norbs)
+
+        # Set up models based on parsed data
         self.set_models(allow_non_spin_polarized)
+
+        # Dump data if an output path is provided
         if outpath is not None:
             self.dump_data(prefix)
 
-    def read_data(self, pkl_file):
+    def read_data(self, pkl_file: str) -> None:
+        """
+        Load serialized data from a pickle file and update instance attributes.
+
+        Args:
+            pkl_file (str): Path to the pickle file containing serialized data.
+        """
         with open(pkl_file, "rb") as f:
             data = pickle.load(f)
             self.__dict__.update(data)
-        if self.SpinP_switch == 3:
+
+        # Determine if the calculation is non-collinear
+        if getattr(self, 'SpinP_switch', 0) == 3:
             self.non_collinear = True
-            
-    def set_models(self, allow_non_spin_polarized):
+        
+    def set_models(self, allow_non_spin_polarized: bool) -> None:
+        """
+        Set up the models based on the SpinP_switch parameter.
+
+        Args:
+            allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations.
+
+        Raises:
+            RuntimeError: If non-spin-polarized calculations are not allowed or if SpinP_switch is invalid.
+        """
         if self.SpinP_switch == 0:
-            if allow_non_spin_polarized == False:
-                raise RuntimeError("The non-spin polarized DFT calculation is not supported for TB2J")
-            tmodel = OpenmxWrapper(self.H[0,:,:,:], self.S, self.R, self.get_basis())
+            if not allow_non_spin_polarized:
+                raise RuntimeError(
+                    "The non-spin polarized DFT calculation is not supported for TB2J"
+                )
+            tmodel = OpenmxWrapper(self.H[0, :, :, :], self.S, self.R, self.get_basis())
             tmodel.efermi = self.efermi
             tmodel.atoms = self.atoms
-            self.tmodels = (tmodel,)
+            self.tmodels: Tuple[OpenmxWrapper] = (tmodel,)
         elif self.SpinP_switch == 1:
-            tmodel_up = OpenmxWrapper(self.H[0,:,:,:], self.S, self.R, self.get_basis(0))
-            tmodel_dn = OpenmxWrapper(self.H[1,:,:,:], self.S, self.R, self.get_basis(1))
+            tmodel_up = OpenmxWrapper(
+                self.H[0, :, :, :], self.S, self.R, self.get_basis(0)
+            )
+            tmodel_dn = OpenmxWrapper(
+                self.H[1, :, :, :], self.S, self.R, self.get_basis(1)
+            )
             tmodel_up.efermi = self.efermi
             tmodel_dn.efermi = self.efermi
             tmodel_up.atoms = self.atoms
             tmodel_dn.atoms = self.atoms
-            self.tmodels = (tmodel_up, tmodel_dn)
+            self.tmodels: Tuple[OpenmxWrapper, OpenmxWrapper] = (tmodel_up, tmodel_dn)
         elif self.SpinP_switch == 3:
-            tmodel = OpenmxWrapper(self.H, self.S, self.R, self.get_basis(), non_collinear=True)
+            tmodel = OpenmxWrapper(
+                self.H, self.S, self.R, self.get_basis(), non_collinear=True
+            )
             tmodel.efermi = self.efermi
             tmodel.atoms = self.atoms
-            self.tmodels = (tmodel,)
+            self.tmodels: Tuple[OpenmxWrapper] = (tmodel,)
         else:
             raise RuntimeError(f"Invalid SpinP_switch {self.SpinP_switch}")
-        
-        
+
     def get_models(self):
-        if len(self.tmodels)  > 0:
+        """
+        Retrieve the models set by set_models.
+
+        Returns:
+            Union[OpenmxWrapper, Tuple[OpenmxWrapper, OpenmxWrapper]]: The models depending on SpinP_switch.
+        """
+        if self.SpinP_switch == 1: # spin-polar case with two spin
             return self.tmodels
         else:
             return self.tmodels[0]
 
     def __getitem__(self, spin):
+        """
+        Access a specific model by spin index.
+
+        Args:
+            spin (int): Spin index (0 for spin-up, 1 for spin-down in spin-polarized cases).
+
+        Returns:
+            OpenmxWrapper: The requested model.
+
+        Raises:
+            IndexError: If the spin index is out of range.
+        """
         return self.tmodels[spin]
 
-    def norbs_to_basis(self, atoms: Atoms, norbs: list[int]):
+    def norbs_to_basis(self, atoms: Atoms, norbs: list[int]) -> None:
+        """
+        Generate basis set for the given atoms and number of orbitals.
+
+        Parameters:
+        atoms (Atoms): Atomic structure information.
+        norbs (list[int]): Number of orbitals for each atomic species.
+        """
         if self.openmx_outfile:
             self.basis_from_output_file(atoms)
         else:
             self.gen_basis_by_number(atoms, norbs)
-        
+
         if self.SpinP_switch == 0:
             basis = []
             for i in range(0, len(self.basis), 2):
                 i, j, _ = self.basis[i]
-                basis.append((i,j,""))
-            self.basis = self.basis
+                basis.append((i, j, ""))
+            self.basis = basis
         print(f"Generate total {len(self.basis)} basis")
 
-    def gen_basis_by_number(self, atoms, norbs):
+    def gen_basis_by_number(self, atoms: Atoms, norbs: list[int]) -> list[tuple[str, str, str]]:
+        """
+        Generate the basis set based on the number of orbitals.
+
+        Parameters:
+        atoms (Atoms): Atomic structure information.
+        norbs (list[int]): Number of orbitals for each atomic species.
+
+        Returns:
+        list[tuple[str, str, str]]: Generated basis set with spin information.
+        """
         self.basis = []
         symbols = atoms.get_chemical_symbols()
-        
+
         sn = list(symbol_number(symbols).keys())
         for i, n in enumerate(norbs):
             for j in range(n):
@@ -228,15 +280,24 @@ class OpenMXParser:
                 self.basis.append((sn[i], f"orb{j+1}", "down"))
         return self.basis
 
-    def get_basis(self, spin = None):
-        if self.SpinP_switch == 0 or spin == None:
+    def get_basis(self, spin: int | None = None) -> list[tuple[str, str, str]]:
+        """
+        Retrieve the basis set for the specified spin channel.
+
+        Parameters:
+        spin (int | None): Spin channel (0 for up, 1 for down, None for all spins).
+
+        Returns:
+        list[tuple[str, str, str]]: Basis set for the given spin channel.
+        """
+        if self.SpinP_switch == 0 or spin is None:
             return self.basis
         elif spin < 2:
-            return self.basis[spin::2] 
+            return self.basis[spin::2]
         else:
             raise RuntimeError(f"Invalid spin value: {spin}")
-        
-    def parse_scfoutput(self, fname):
+
+    def parse_scfoutput(self, fname: str):
         argv0 = ffi.new("char[]", b"")
         argv = ffi.new("char[]", bytes(fname, encoding="ascii"))
         lib.read_scfout([argv0, argv])
@@ -318,8 +379,7 @@ class OpenMXParser:
 
             # up up
             for iR in range(self.ncell):
-                self.H[iR, ::2, ::2] = HR[iR, 0, :, :] + \
-                    1j * HR_imag[iR, 0, :, :]
+                self.H[iR, ::2, ::2] = HR[iR, 0, :, :] + 1j * HR_imag[iR, 0, :, :]
                 # up down
                 self.H[iR, ::2, 1::2] = HR[iR, 2, :, :] + 1j * (
                     HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
@@ -329,8 +389,7 @@ class OpenMXParser:
                     HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
                 )
                 # down down
-                self.H[iR, 1::2, 1::2] = HR[iR, 1, :, :] + \
-                    1j * HR_imag[iR, 1, :, :]
+                self.H[iR, 1::2, 1::2] = HR[iR, 1, :, :] + 1j * HR_imag[iR, 1, :, :]
         else:  # collinear
             HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
             for iR in range(0, self.ncell):
@@ -339,7 +398,7 @@ class OpenMXParser:
                         HR[iR, ispin, iorb, :] = asarray(
                             ffi, lib.HR[iR][ispin][iorb], norb
                         )
-            
+
             self.H = np.swapaxes(HR, 0, 1)
 
         self.efermi = lib.ChemP * Ha
@@ -349,16 +408,25 @@ class OpenMXParser:
         for iR in range(0, self.ncell):
             for iorb in range(lib.T_NumOrbs):
                 SR[iR, iorb, :] = asarray(ffi, lib.SR[iR][iorb], norb)
-        self.S = SR # np.kron(SR, np.eye(2))
+        self.S = SR  # np.kron(SR, np.eye(2))
         print("Loading from scfout file OK!")
         lib.free_HSR()
         lib.free_scfout()
-    
-    def dump_data(self, name = "openmx"):
+
+    def dump_data(self, name: str = "openmx") -> str:
+        """
+        Serialize the parsed data into a pickle file for later use.
+
+        Parameters:
+        name (str): The prefix for the output file name. Defaults to "openmx".
+
+        Returns:
+        str: Path to the serialized pickle file.
+        """
         data = {
             "basis": self.basis,
             "efermi": self.efermi,
-            "SpinP_switch": self.SpinP_switch,    
+            "SpinP_switch": self.SpinP_switch,
             "H": self.H,
             "R": self.R,
             "S": self.S,
@@ -370,20 +438,31 @@ class OpenMXParser:
             pickle.dump(data, f)
         return datafile
 
-    def basis_from_output_file(self, atoms: Atoms):
-        """Parse the basis set configuration from a dat file and construct basis."""
+    def basis_from_output_file(self, atoms: Atoms) -> list[tuple[str, str, str]]:
+        """
+        Parse the basis set configuration from a OpenMX  file and construct the basis set.
+
+        Parameters:
+        atoms (Atoms): Atomic structure information.
+
+        Returns:
+        list[tuple[str, str, str]]: The constructed basis set.
+
+        Raises:
+        RuntimeError: If the atomic species definition section is not found or insufficient.
+        """
         symbols = atoms.get_chemical_symbols()
 
         # Read lines from the dat file
-        with open(self.openmx_outfile, 'r') as file:
+        with open(self.openmx_outfile, "r") as file:
             lines = file.readlines()
 
         # Find the indices of the atomic species definition section
         start_index, end_index = -1, -1
         for index, line in enumerate(lines):
-            if line.startswith('<Definition.of.Atomic.Species'):
+            if line.startswith("<Definition.of.Atomic.Species"):
                 start_index = index + 1
-            if line.startswith('Definition.of.Atomic.Species>'):
+            if line.startswith("Definition.of.Atomic.Species>"):
                 end_index = index
                 break
 
@@ -398,13 +477,13 @@ class OpenMXParser:
         pao_input_s = {}
         for line in lines[start_index:end_index]:
             line = line.strip()
-            if line.startswith('#'):
+            if line.startswith("#"):
                 continue
             tokens = line.split()
-            element = validate_element(tokens[2].split('_')[0])
-            pao_input_s[element] = tokens[1].split('-')[1]
+            element = validate_element(tokens[2].split("_")[0])
+            pao_input_s[element] = tokens[1].split("-")[1]
             pao_definitions[element] = parse_pao_config(pao_input_s[element])
-        
+
         # Map atomic tags to their symbols
         atom_tags = list(symbol_number(symbols).keys())
         self.basis = []
@@ -412,11 +491,9 @@ class OpenMXParser:
             basis = []
             if symbol not in pao_definitions:
                 raise RuntimeError(f"No PAO definition found for symbol: {symbol}")
-            
+
             paos_for_symbol = pao_definitions[symbol]
-            # num_orbs = 0
             for num_paos, pao_order, pao_list in paos_for_symbol:
-                # num_orbs += num_paos * len(pao_list)
                 for index in range(num_paos):
                     for pao in pao_list:
                         basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
@@ -432,33 +509,79 @@ class OpenMXParser:
         return self.basis
 
 class OpenmxWrapper(AbstractTB):
-    def __init__(self, H, S, R, basis, non_collinear = False):
+    """
+    A wrapper for handling OpenMX Hamiltonian and overlap matrices.
+
+    Attributes:
+        H (np.ndarray): Hamiltonian matrices for each lattice vector R.
+        S (np.ndarray): Overlap matrices for each lattice vector R.
+        R (np.ndarray): Array of lattice vectors R.
+        basis (list): List of basis identifiers.
+        non_collinear (bool): Whether the system is non-collinear.
+        nbasis (int): Total number of basis functions.
+        norb (int): Number of orbitals per spin channel.
+        nspin (int): Number of spin channels (1 for collinear, 2 for non-collinear).
+        Rdict (dict): Mapping from R tuples to indices in H and S.
+        R2kfactor (complex): Factor for converting R vectors to k-space phase factors.
+    """
+
+    def __init__(self, H, S, R, basis, non_collinear=False):
+        """
+        Initialize the OpenmxWrapper instance.
+
+        Args:
+            H (np.ndarray): Hamiltonian matrices for each R.
+            S (np.ndarray): Overlap matrices for each R.
+            R (np.ndarray): Array of lattice vectors R.
+            basis (list): List of basis identifiers.
+            non_collinear (bool): Whether the system is non-collinear. Default is False.
+        """
         self.is_siesta = False
         self.is_orthogonal = False
         self.non_collinear = non_collinear
-        # self.norb = H.shape[-1]
         self.H = H
         self.S = S
-        #self.spin = spin
         self.basis = basis
         self.nbasis = H.shape[-1]
+
         if self.nbasis != len(basis):
-            raise RuntimeError("Invalid number of basis {self.nbasis} from H, and {len(basis)} from basis list")
-        
+            raise RuntimeError(
+                f"Invalid number of basis: {self.nbasis} from H, and {len(basis)} from basis list"
+            )
+
         self.R2kfactor = 2.0j * np.pi
-        self.nspin = 1 + non_collinear # 1 is collinear and 2 is non-collinear
+        self.nspin = 1 + non_collinear  # 1 for collinear, 2 for non-collinear
         self.norb = self.nbasis // self.nspin
-        self._name = 'OpenMX'
-        self.Rdict = dict()
+        self._name = "OpenMX"
+
+        self.Rdict = {tuple(R): i for i, R in enumerate(R)}
         self.R = R
-        for i, R in enumerate(self.R):
-            self.Rdict[tuple(R)] = i
-    
+
     def solve(self, k, convention=2):
+        """
+        Solve the eigenvalue problem for a given k-point.
+
+        Args:
+            k (tuple): The k-point in reciprocal space.
+            convention (int): Phase convention (1 or 2). Default is 2.
+
+        Returns:
+            tuple: Eigenvalues and eigenvectors.
+        """
         Hk, Sk = self.gen_ham(k, convention=convention)
         return sl.eigh(Hk, Sk)
 
     def solve_all(self, kpts, convention=2):
+        """
+        Solve the eigenvalue problem for all k-points.
+
+        Args:
+            kpts (list): List of k-points.
+            convention (int): Phase convention (1 or 2). Default is 2.
+
+        Returns:
+            tuple: Eigenvalues and eigenvectors for all k-points.
+        """
         nk = len(kpts)
         evals = np.zeros((nk, self.nbasis), dtype=float)
         evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
@@ -467,57 +590,76 @@ class OpenmxWrapper(AbstractTB):
         return evals, evecs
 
     def HSE_k(self, kpt, convention=2):
+        """
+        Generate Hamiltonian, overlap matrices, and solve the eigenvalue problem at a k-point.
+
+        Args:
+            kpt (tuple): The k-point in reciprocal space.
+            convention (int): Phase convention (1 or 2). Default is 2.
+
+        Returns:
+            tuple: Hamiltonian, overlap matrix, eigenvalues, and eigenvectors.
+        """
         Hk, Sk = self.gen_ham(tuple(kpt), convention=convention)
-        #if self.non_collinear:
-        #    evals, evecs = reorder_and_solve_and_back(Hk, Sk)
-        #else:
         evals, evecs = sl.eigh(Hk, Sk)
         return Hk, Sk, evals, evecs
-    
+
     def gen_ham(self, k, convention=2):
         """
-        generate hamiltonian matrix at k point.
-        H_k( i, j)=\sum_R H_R(i, j)^phase.
-        There are two conventions,
-        first:
-        phase =e^{ik(R+rj-ri)}. often better used for berry phase.
-        second:
-        phase= e^{ikR}. We use the first convention here.
+        Generate the Hamiltonian and overlap matrices at a given k-point.
 
-        :param k: kpoint
-        :param convention: 1 or 2.
+        Args:
+            k (tuple): The k-point in reciprocal space.
+            convention (int): Phase convention (1 or 2). Default is 2.
+
+        Returns:
+            tuple: Hamiltonian and overlap matrices at the k-point.
         """
         if convention == 2:
             phase = np.exp(self.R2kfactor * (self.R @ k))
             Hk = np.einsum("rij, r->ij", self.H, phase)
             Sk = np.einsum("rij, r->ij", self.S, phase)
         elif convention == 1:
-            # TODO: implement the first convention (the r convention)
-            raise NotImplementedError("convention 1 is not implemented yet.")
-            pass
+            raise NotImplementedError("Convention 1 is not implemented yet.")
         else:
-            raise ValueError("convention should be either 1 or 2.")
+            raise ValueError("Convention should be either 1 or 2.")
+
         return Hk, Sk
 
     def HS_and_eigen(self, kpts, convention=2):
         """
-        calculate eigens for all kpoints.
-        :param kpts: list of k points.
+        Calculate Hamiltonians, overlap matrices, and eigenvalues for all k-points.
+
+        Args:
+            kpts (list): List of k-points.
+            convention (int): Phase convention (1 or 2). Default is 2.
+
+        Returns:
+            tuple: Hamiltonians, overlap matrices, eigenvalues, and eigenvectors for all k-points.
         """
         nk = len(kpts)
         hams = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
         ovps = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
         evals = np.zeros((nk, self.nbasis), dtype=float)
         evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+
         for ik, k in enumerate(kpts):
             hams[ik], ovps[ik], evals[ik], evecs[ik] = self.HSE_k(
                 tuple(k), convention=convention
             )
         return hams, ovps, evals, evecs
-    
-    def get_hamR(self, R):
-        return self.H[self.Rdict[tuple(R)]]
 
+    def get_hamR(self, R):
+        """
+        Retrieve the Hamiltonian matrix for a given R vector.
+
+        Args:
+            R (tuple): Lattice vector R.
+
+        Returns:
+            np.ndarray: Hamiltonian matrix for the given R.
+        """
+        return self.H[self.Rdict[tuple(R)]]
 
 def test():
     openmx = OpenmxWrapper(
