@@ -164,8 +164,9 @@ class OpenMXParser:
             allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
         """
         if isinstance(restart, str):
-            with open(pkl_file, "rb") as f:
+            with open(restart, "rb") as f:
                 data = pickle.load(f)
+                print(data.keys())
                 self.__dict__.update(data)
         elif isinstance(restart, dict):
             self.__dict__.update(restart)
@@ -443,7 +444,7 @@ class OpenMXParser:
         }
         if not os.path.isdir(self.outpath):
             os.makedirs(self.outpath)
-        datafile = os.path.join(self.outpath, name + ".pkl")
+        datafile = os.path.join(self.outpath, name + "_data.pkl")
         print("write restart file to", datafile)
         with open(datafile, "wb") as f:
             pickle.dump(data, f)

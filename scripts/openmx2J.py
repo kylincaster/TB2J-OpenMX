@@ -74,6 +74,12 @@ def run_openmx2J():
     )
     
     parser.add_argument(
+        "--restart",
+        help="read restart data from a pickle file, default: None",
+        default=None,
+    )
+    
+    parser.add_argument(
         "-t",
         "--threads", 
         help="number of threads to use in LAPACK and BLAS, default: 1",
@@ -143,7 +149,8 @@ def run_openmx2J():
         use_cache=args.use_cache,
         np=args.np,
         exclude_orbs=args.exclude_orbs,
-        orb_decomposition=args.orb_decomposition,)
+        orb_decomposition=args.orb_decomposition,
+        restart = args.restart)
 
 if __name__ == "__main__":
     run_openmx2J()

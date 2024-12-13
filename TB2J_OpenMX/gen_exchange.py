@@ -18,9 +18,14 @@ def gen_exchange_openmx(path,
                  np=1,
                  use_cache=False,
                  orb_decomposition=True,
-                 description=None):
+                 description=None,
+                 restart=None):
     # path = output_path+"/Fe.pkl" test for read_data
-    parser = OpenMXParser(path, prefix, outpath = output_path)
+    if restart is not None and os.path.isfile(restart):
+        parser = OpenMXParser(None)
+        parser.read_data(restart)
+    else:
+        parser = OpenMXParser(path, prefix, outpath = output_path)
     if parser.non_collinear:
         Exchange=ExchangeNCL
     else:
