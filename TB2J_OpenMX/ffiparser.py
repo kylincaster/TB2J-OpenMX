@@ -249,8 +249,8 @@ class OpenmxWrapper(AbstractTB):
         if start_index == -1 or end_index == -1:
             raise RuntimeError("Cannot find paired tag `Definition.of.Atomic.Species`")
 
-        if (end_index - start_index) < len(symbols):
-            raise RuntimeError("Insufficient atomic species definitions in the file")
+        if (end_index - start_index) < len(set(symbols)):
+            raise RuntimeError(f"Insufficient atomic species definitions in the file {start_index}-{end_index} for {len(set(symbols))} species")
 
         # Parse PAOs for each element
         pao_definitions = {}
