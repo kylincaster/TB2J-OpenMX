@@ -20,7 +20,7 @@ def run_openmx2J():
     print("\n")
     parser = argparse.ArgumentParser(
         description=
-        "openmx2J: Using magnetic force theorem to calculate exchange parameter J from openmx Hamiltonian"
+        "openmx2J classic: Using magnetic force theorem to calculate exchange parameter J from openmx Hamiltonian"
     )
 
     parser.add_argument(
