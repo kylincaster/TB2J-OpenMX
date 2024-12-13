@@ -1,4 +1,4 @@
-from TB2J_OpenMX.ffiparser import parse_openmx
+from TB2J_OpenMX.ffiparser import OpenMXParser
 from TB2J.exchange import ExchangeNCL, ExchangeCL
 from TB2J.exchangeCL2 import ExchangeCL2
 import os
@@ -19,23 +19,22 @@ def gen_exchange(path,
                  use_cache=False,
                  orb_decomposition=True,
                  description=None):
-    tbmodel_ts = parse_openmx(path, prefix)
-    if isinstance(tbmodel_ts, tuple):
-        tbmodel = tbmodel_ts[0]
-        Exchange=ExchangeCL2
-    else:
-        tbmodel = tbmodel_ts
+    # path = output_path+"/Fe.pkl" test for read_data
+    parser = OpenMXParser(path, prefix, outpath = output_path)
+    if parser.non_collinear:
         Exchange=ExchangeNCL
+    else:
+        Exchange=ExchangeCL2
     print("Starting to calculate exchange.")
     description=f"""Using OpenMX data: 
 path: {os.path.abspath(path)}
 prefix: {prefix}
 """
     exchange = Exchange(
-            tbmodels=tbmodel_ts,
-            atoms=tbmodel.atoms,
-            basis=tbmodel.basis,
-            efermi=tbmodel.efermi,
+            tbmodels=parser.get_models(),
+            atoms=parser.atoms,
+            basis=parser[0].basis,
+            efermi=parser.efermi,
             magnetic_elements=magnetic_elements,
             include_orbs=include_orbs,
             kmesh=kmesh,

@@ -6,9 +6,9 @@ from ase.io import read
 from ase import Atoms
 from TB2J.utils import kmesh_to_R, symbol_number
 from TB2J.myTB import AbstractTB
-import matplotlib.pyplot as plt
 from TB2J_OpenMX.cmod._scfout_parser import ffi, lib
 from ase.data import atomic_numbers
+import pickle
 
 def validate_element(element_name: str) -> str:
     """Validate if the element name exists in the atomic numbers set."""
@@ -130,141 +130,245 @@ def reorder_and_solve_and_back(Hk, Sk):
     evecs = reorder_back_evecs(evecs)
     return evalue, evecs
 
-def parse_openmx(path, prefix="openmx", allow_non_spin_polarized = False):
-    fname = os.path.join(path, prefix + ".scfout")
-    if not os.path.isfile(fname):
-        raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fname}`")
-    fxyzname = os.path.join(path, prefix + ".xyz")
-    if not os.path.isfile(fxyzname):
-        raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fxyzname}`")
-    
-    argv0 = ffi.new("char[]", b"")
-    argv = ffi.new("char[]", bytes(fname, encoding="ascii"))
-    lib.read_scfout([argv0, argv])
-    lib.prepare_HSR()
-
-    if lib.SpinP_switch == 3:
-        tmodel = OpenmxWrapper(path, prefix, non_collinear = True, spin = None)
-    elif lib.SpinP_switch == 1:
-        tmodelup = OpenmxWrapper(path, prefix, non_collinear = False, spin = 0)
-        tmodeldn = OpenmxWrapper(path, prefix, non_collinear = False, spin = 1)
-        tmodel = (tmodelup, tmodeldn)
-    else:
-        if allow_non_spin_polarized and lib.SpinP_switch == 0:
-            tmodel = OpenmxWrapper(path, prefix, non_collinear = False, spin = 0)
-        else:
-            raise (
-                " The value of SpinP_switch is %s. Can only get J from collinear and non-collinear mode."
-                % lib.SpinP_switch
-            )
-    
-    lib.free_HSR()
-    lib.free_scfout()
-
-    return tmodel
-
-
-class OpenmxWrapper(AbstractTB):
-    def __init__(self, path, prefix="openmx", non_collinear = True, spin = None):
-        self.is_siesta = False
-        self.is_orthogonal = False
-        xyz_fname = os.path.join(path, prefix + ".xyz")
+class OpenMXParser:
+    def __init__(self, path, prefix="openmx", outpath=None, allow_non_spin_polarized = False):
+        self.non_collinear = False
+        if os.path.isfile(path):
+            self.read_data(path)
+            return self.set_models(allow_non_spin_polarized)
         
         fname = os.path.join(path, prefix + ".scfout")
-        self.fname = fname
-        if not os.path.isfile(self.fname):
-            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{self.fname}`")
-        
-        fname = os.path.join(path, prefix + ".out")
         if not os.path.isfile(fname):
-            fname = None
-        self.openmx_outfile = fname
-        self.non_collinear = non_collinear
-        self.spin = spin
-        self.R2kfactor = 2.0j * np.pi
-        self.parse_scfoutput()
-        self.Rdict = dict()
-        for i, R in enumerate(self.R):
-            self.Rdict[tuple(R)] = i
-        atoms = read(xyz_fname)
+            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fname}`")
+        
+        fxyzname = os.path.join(path, prefix + ".xyz")
+        if not os.path.isfile(fxyzname):
+            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fxyzname}`")
+        
+        self.openmx_outfile = os.path.join(path, prefix + ".out")
+        if not os.path.isfile(self.openmx_outfile):
+            self.openmx_outfile = None
+
+        self.outpath = outpath
+        # read the information
+        
+        self.parse_scfoutput(fname)
+        atoms = read(fxyzname)
         self.atoms = Atoms(
             atoms.get_chemical_symbols(), cell=self.cell, positions=self.positions
         )
         self.norbs_to_basis(self.atoms, self.norbs)
-        self.nspin = 1 + non_collinear
-        self.nbasis = self.nspin * self.norb
-        self._name = 'OpenMX'
-        self.k_count = 0
+        self.set_models(allow_non_spin_polarized)
+        if outpath is not None:
+            self.dump_data(prefix)
 
-    def solve(self, k, convention=2):
-        Hk, Sk = self.gen_ham(k, convention=convention)
-        return sl.eigh(Hk, Sk)
-
-    def solve_all(self, kpts, convention=2):
-        nk = len(kpts)
-        evals = np.zeros((nk, self.nbasis), dtype=float)
-        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        for ik, k in enumerate(kpts):
-            evals[ik], evecs[ik] = self.solve(k, convention=convention)
-        return evals, evecs
-
-    def HSE_k(self, kpt, convention=2):
-        Hk, Sk = self.gen_ham(tuple(kpt), convention=convention)
-        if self.non_collinear:
-            evals, evecs = reorder_and_solve_and_back(Hk, Sk)
+    def read_data(self, pkl_file):
+        with open(pkl_file, "rb") as f:
+            data = pickle.load(f)
+            self.__dict__.update(data)
+        if self.SpinP_switch == 3:
+            self.non_collinear = True
+            
+    def set_models(self, allow_non_spin_polarized):
+        if self.SpinP_switch == 0:
+            if allow_non_spin_polarized == False:
+                raise RuntimeError("The non-spin polarized DFT calculation is not supported for TB2J")
+            tmodel = OpenmxWrapper(self.H[0,:,:,:], self.S, self.R, self.get_basis())
+            tmodel.efermi = self.efermi
+            tmodel.atoms = self.atoms
+            self.tmodels = (tmodel,)
+        elif self.SpinP_switch == 1:
+            tmodel_up = OpenmxWrapper(self.H[0,:,:,:], self.S, self.R, self.get_basis(0))
+            tmodel_dn = OpenmxWrapper(self.H[1,:,:,:], self.S, self.R, self.get_basis(1))
+            tmodel_up.efermi = self.efermi
+            tmodel_dn.efermi = self.efermi
+            tmodel_up.atoms = self.atoms
+            tmodel_dn.atoms = self.atoms
+            self.tmodels = (tmodel_up, tmodel_dn)
+        elif self.SpinP_switch == 3:
+            tmodel = OpenmxWrapper(self.H, self.S, self.R, self.get_basis(), non_collinear=True)
+            tmodel.efermi = self.efermi
+            tmodel.atoms = self.atoms
+            self.tmodels = (tmodel,)
         else:
-            evals, evecs = sl.eigh(Hk, Sk)
-        return Hk, Sk, evals, evecs
-    
-    def gen_ham(self, k, convention=2):
-        """
-        generate hamiltonian matrix at k point.
-        H_k( i, j)=\sum_R H_R(i, j)^phase.
-        There are two conventions,
-        first:
-        phase =e^{ik(R+rj-ri)}. often better used for berry phase.
-        second:
-        phase= e^{ikR}. We use the first convention here.
-
-        :param k: kpoint
-        :param convention: 1 or 2.
-        """
-        if convention == 2:
-            phase = np.exp(self.R2kfactor * (self.R @ k))
-            Hk = np.einsum("rij, r->ij", self.H, phase)
-            Sk = np.einsum("rij, r->ij", self.S, phase)
-        elif convention == 1:
-            # TODO: implement the first convention (the r convention)
-            raise NotImplementedError("convention 1 is not implemented yet.")
-            pass
+            raise RuntimeError(f"Invalid SpinP_switch {self.SpinP_switch}")
+        
+        
+    def get_models(self):
+        if len(self.tmodels)  > 0:
+            return self.tmodels
         else:
-            raise ValueError("convention should be either 1 or 2.")
-        return Hk, Sk
+            return self.tmodels[0]
 
-    def HS_and_eigen(self, kpts, convention=2):
-        """
-        calculate eigens for all kpoints.
-        :param kpts: list of k points.
-        """
-        nk = len(kpts)
-        hams = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        ovps = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        evals = np.zeros((nk, self.nbasis), dtype=float)
-        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
-        for ik, k in enumerate(kpts):
-            hams[ik], ovps[ik], evals[ik], evecs[ik] = self.HSE_k(
-                tuple(k), convention=convention
-            )
-        return hams, ovps, evals, evecs
-    
-    def get_hamR(self, R):
-        return self.H[self.Rdict[tuple(R)]]
+    def __getitem__(self, spin):
+        return self.tmodels[spin]
 
     def norbs_to_basis(self, atoms: Atoms, norbs: list[int]):
         if self.openmx_outfile:
-            return self.basis_from_output_file(atoms)
+            self.basis_from_output_file(atoms)
         else:
-            return self._norbs_to_basis(atoms, norbs)
+            self.gen_basis_by_number(atoms, norbs)
+        
+        if self.SpinP_switch == 0:
+            basis = []
+            for i in range(0, len(self.basis), 2):
+                i, j, _ = self.basis[i]
+                basis.append((i,j,""))
+            self.basis = self.basis
+        print(f"Generate total {len(self.basis)} basis")
+
+    def gen_basis_by_number(self, atoms, norbs):
+        self.basis = []
+        symbols = atoms.get_chemical_symbols()
+        
+        sn = list(symbol_number(symbols).keys())
+        for i, n in enumerate(norbs):
+            for j in range(n):
+                self.basis.append((sn[i], f"orb{j+1}", "up"))
+                self.basis.append((sn[i], f"orb{j+1}", "down"))
+        return self.basis
+
+    def get_basis(self, spin = None):
+        if self.SpinP_switch == 0 or spin == None:
+            return self.basis
+        elif spin < 2:
+            return self.basis[spin::2] 
+        else:
+            raise RuntimeError(f"Invalid spin value: {spin}")
+        
+    def parse_scfoutput(self, fname):
+        argv0 = ffi.new("char[]", b"")
+        argv = ffi.new("char[]", bytes(fname, encoding="ascii"))
+        lib.read_scfout([argv0, argv])
+        lib.prepare_HSR()
+
+        self.ncell = lib.TCpyCell + 1
+        self.natom = lib.atomnum
+        self.norbs = np.copy(asarray(ffi, lib.Total_NumOrbs, self.natom + 1)[1:])
+
+        fnan = asarray(ffi, lib.FNAN, self.natom + 1)
+
+        natn = []
+        for iatom in range(self.natom):
+            natn.append(asarray(ffi, lib.natn[iatom + 1], fnan[iatom + 1] + 1))
+
+        ncn = []
+        for iatom in range(self.natom):
+            ncn.append(asarray(ffi, lib.ncn[iatom + 1], fnan[iatom + 1] + 1))
+        # atv
+        #  x,y,and z-components of translation vector of
+        # periodically copied cells
+        # size: atv[TCpyCell+1][4];
+        atv = []
+        for icell in range(self.ncell):
+            atv.append(asarray(ffi, lib.atv[icell], 4))
+        atv = np.copy(np.array(atv))
+
+        atv_ijk = []
+        for icell in range(self.ncell):
+            atv_ijk.append(asarray(ffi, lib.atv_ijk[icell], 4))
+        atv_ijk = np.array(atv_ijk)
+        self.R = atv_ijk[:, 1:]
+        tv = []
+        for i in range(4):
+            tv.append(asarray(ffi, lib.tv[i], 4))
+        tv = np.array(tv)
+        self.cell = np.copy(tv[1:, 1:]) * Bohr
+
+        rtv = []
+        for i in range(4):
+            rtv.append(asarray(ffi, lib.rtv[i], 4))
+        rtv = np.array(rtv)
+        self.rcell = np.copy(rtv[1:, 1:])
+
+        Gxyz = []
+        for iatom in range(self.natom):
+            Gxyz.append(asarray(ffi, lib.Gxyz[iatom + 1], 60))
+        self.positions = np.copy(np.array(Gxyz)[:, 1:4]) * Bohr
+
+        self.MP = np.copy(asarray(ffi, lib.MP, self.natom + 1)[1:])
+
+        self.norb = lib.T_NumOrbs
+        norb = self.norb
+        self.SpinP_switch = lib.SpinP_switch
+
+        if self.SpinP_switch == 3:
+            self.non_collinear = True
+
+        if self.non_collinear:
+            HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
+            for iR in range(0, self.ncell):
+                for ispin in range(lib.SpinP_switch + 1):
+                    for iorb in range(lib.T_NumOrbs):
+                        HR[iR, ispin, iorb, :] = asarray(
+                            ffi, lib.HR[iR][ispin][iorb], norb
+                        )
+
+            HR_imag = np.zeros([self.ncell, 3, lib.T_NumOrbs, lib.T_NumOrbs])
+            for iR in range(0, self.ncell):
+                for ispin in range(3):
+                    for iorb in range(lib.T_NumOrbs):
+                        HR_imag[iR, ispin, iorb, :] = asarray(
+                            ffi, lib.HR_imag[iR][ispin][iorb], norb
+                        )
+
+            self.H = np.zeros(
+                [self.ncell, lib.T_NumOrbs * 2, lib.T_NumOrbs * 2], dtype=complex
+            )
+
+            # up up
+            for iR in range(self.ncell):
+                self.H[iR, ::2, ::2] = HR[iR, 0, :, :] + \
+                    1j * HR_imag[iR, 0, :, :]
+                # up down
+                self.H[iR, ::2, 1::2] = HR[iR, 2, :, :] + 1j * (
+                    HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
+                )
+                # down up
+                self.H[iR, 1::2, ::2] = HR[iR, 2, :, :] - 1j * (
+                    HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
+                )
+                # down down
+                self.H[iR, 1::2, 1::2] = HR[iR, 1, :, :] + \
+                    1j * HR_imag[iR, 1, :, :]
+        else:  # collinear
+            HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
+            for iR in range(0, self.ncell):
+                for ispin in range(self.SpinP_switch + 1):
+                    for iorb in range(lib.T_NumOrbs):
+                        HR[iR, ispin, iorb, :] = asarray(
+                            ffi, lib.HR[iR][ispin][iorb], norb
+                        )
+            
+            self.H = np.swapaxes(HR, 0, 1)
+
+        self.efermi = lib.ChemP * Ha
+        self.H *= Ha
+
+        SR = np.zeros([self.ncell, lib.T_NumOrbs, lib.T_NumOrbs])
+        for iR in range(0, self.ncell):
+            for iorb in range(lib.T_NumOrbs):
+                SR[iR, iorb, :] = asarray(ffi, lib.SR[iR][iorb], norb)
+        self.S = SR # np.kron(SR, np.eye(2))
+        print("Loading from scfout file OK!")
+        lib.free_HSR()
+        lib.free_scfout()
+    
+    def dump_data(self, name = "openmx"):
+        data = {
+            "basis": self.basis,
+            "efermi": self.efermi,
+            "SpinP_switch": self.SpinP_switch,    
+            "H": self.H,
+            "R": self.R,
+            "S": self.S,
+            "atoms": self.atoms,
+        }
+        datafile = os.path.join(self.outpath, name + ".pkl")
+        print("write restart file to", datafile)
+        with open(datafile, "wb") as f:
+            pickle.dump(data, f)
+        return datafile
 
     def basis_from_output_file(self, atoms: Atoms):
         """Parse the basis set configuration from a dat file and construct basis."""
@@ -315,10 +419,8 @@ class OpenmxWrapper(AbstractTB):
                 # num_orbs += num_paos * len(pao_list)
                 for index in range(num_paos):
                     for pao in pao_list:
-                        if self.spin == 0:
-                            basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
-                        else:
-                            basis.append((tag, f"{pao_order}{pao}N{index+1}", "down"))
+                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "up"))
+                        basis.append((tag, f"{pao_order}{pao}N{index+1}", "down"))
 
             print(f"{tag} `{pao_input_s[symbol]}`[{len(basis)//2}]: ", end="")
             for i in range(0, len(basis), 2):
@@ -329,131 +431,93 @@ class OpenmxWrapper(AbstractTB):
 
         return self.basis
 
-
-    def _norbs_to_basis(self, atoms, norbs):
-        self.basis = []
-        symbols = atoms.get_chemical_symbols()
+class OpenmxWrapper(AbstractTB):
+    def __init__(self, H, S, R, basis, non_collinear = False):
+        self.is_siesta = False
+        self.is_orthogonal = False
+        self.non_collinear = non_collinear
+        # self.norb = H.shape[-1]
+        self.H = H
+        self.S = S
+        #self.spin = spin
+        self.basis = basis
+        self.nbasis = H.shape[-1]
+        if self.nbasis != len(basis):
+            raise RuntimeError("Invalid number of basis {self.nbasis} from H, and {len(basis)} from basis list")
         
-        sn = list(symbol_number(symbols).keys())
-        print(sn, norbs)
-        raise NotImplementedError()
-        for i, n in enumerate(norbs):
-            for x in range(n):
-                self.basis.append((sn[i], f"orb{x+1}", "up"))
-                self.basis.append((sn[i], f"orb{x+1}", "down"))
-        return self.basis
+        self.R2kfactor = 2.0j * np.pi
+        self.nspin = 1 + non_collinear # 1 is collinear and 2 is non-collinear
+        self.norb = self.nbasis // self.nspin
+        self._name = 'OpenMX'
+        self.Rdict = dict()
+        self.R = R
+        for i, R in enumerate(self.R):
+            self.Rdict[tuple(R)] = i
+    
+    def solve(self, k, convention=2):
+        Hk, Sk = self.gen_ham(k, convention=convention)
+        return sl.eigh(Hk, Sk)
 
-    def parse_scfoutput(self):
-        self.ncell = lib.TCpyCell + 1
-        self.natom = lib.atomnum
-        self.norbs = np.copy(asarray(ffi, lib.Total_NumOrbs, self.natom + 1)[1:])
+    def solve_all(self, kpts, convention=2):
+        nk = len(kpts)
+        evals = np.zeros((nk, self.nbasis), dtype=float)
+        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        for ik, k in enumerate(kpts):
+            evals[ik], evecs[ik] = self.solve(k, convention=convention)
+        return evals, evecs
 
-        fnan = asarray(ffi, lib.FNAN, self.natom + 1)
+    def HSE_k(self, kpt, convention=2):
+        Hk, Sk = self.gen_ham(tuple(kpt), convention=convention)
+        #if self.non_collinear:
+        #    evals, evecs = reorder_and_solve_and_back(Hk, Sk)
+        #else:
+        evals, evecs = sl.eigh(Hk, Sk)
+        return Hk, Sk, evals, evecs
+    
+    def gen_ham(self, k, convention=2):
+        """
+        generate hamiltonian matrix at k point.
+        H_k( i, j)=\sum_R H_R(i, j)^phase.
+        There are two conventions,
+        first:
+        phase =e^{ik(R+rj-ri)}. often better used for berry phase.
+        second:
+        phase= e^{ikR}. We use the first convention here.
 
-        natn = []
-        for iatom in range(self.natom):
-            natn.append(asarray(ffi, lib.natn[iatom + 1], fnan[iatom + 1] + 1))
+        :param k: kpoint
+        :param convention: 1 or 2.
+        """
+        if convention == 2:
+            phase = np.exp(self.R2kfactor * (self.R @ k))
+            Hk = np.einsum("rij, r->ij", self.H, phase)
+            Sk = np.einsum("rij, r->ij", self.S, phase)
+        elif convention == 1:
+            # TODO: implement the first convention (the r convention)
+            raise NotImplementedError("convention 1 is not implemented yet.")
+            pass
+        else:
+            raise ValueError("convention should be either 1 or 2.")
+        return Hk, Sk
 
-        ncn = []
-        for iatom in range(self.natom):
-            ncn.append(asarray(ffi, lib.ncn[iatom + 1], fnan[iatom + 1] + 1))
-        # atv
-        #  x,y,and z-components of translation vector of
-        # periodically copied cells
-        # size: atv[TCpyCell+1][4];
-        atv = []
-        for icell in range(self.ncell):
-            atv.append(asarray(ffi, lib.atv[icell], 4))
-        atv = np.copy(np.array(atv))
-
-        atv_ijk = []
-        for icell in range(self.ncell):
-            atv_ijk.append(asarray(ffi, lib.atv_ijk[icell], 4))
-        atv_ijk = np.array(atv_ijk)
-        self.R = atv_ijk[:, 1:]
-        tv = []
-        for i in range(4):
-            tv.append(asarray(ffi, lib.tv[i], 4))
-        tv = np.array(tv)
-        self.cell = np.copy(tv[1:, 1:]) * Bohr
-
-        rtv = []
-        for i in range(4):
-            rtv.append(asarray(ffi, lib.rtv[i], 4))
-        rtv = np.array(rtv)
-        self.rcell = np.copy(rtv[1:, 1:])
-
-        Gxyz = []
-        for iatom in range(self.natom):
-            Gxyz.append(asarray(ffi, lib.Gxyz[iatom + 1], 60))
-        self.positions = np.copy(np.array(Gxyz)[:, 1:4]) * Bohr
-
-        self.MP = np.copy(asarray(ffi, lib.MP, self.natom + 1)[1:])
-
-        self.norb = lib.T_NumOrbs
-        norb = self.norb
-
-        if self.non_collinear:
-            HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
-            for iR in range(0, self.ncell):
-                for ispin in range(lib.SpinP_switch + 1):
-                    for iorb in range(lib.T_NumOrbs):
-                        HR[iR, ispin, iorb, :] = asarray(
-                            ffi, lib.HR[iR][ispin][iorb], norb
-                        )
-
-            HR_imag = np.zeros([self.ncell, 3, lib.T_NumOrbs, lib.T_NumOrbs])
-            for iR in range(0, self.ncell):
-                for ispin in range(3):
-                    for iorb in range(lib.T_NumOrbs):
-                        HR_imag[iR, ispin, iorb, :] = asarray(
-                            ffi, lib.HR_imag[iR][ispin][iorb], norb
-                        )
-
-            self.H = np.zeros(
-                [self.ncell, lib.T_NumOrbs * 2, lib.T_NumOrbs * 2], dtype=complex
+    def HS_and_eigen(self, kpts, convention=2):
+        """
+        calculate eigens for all kpoints.
+        :param kpts: list of k points.
+        """
+        nk = len(kpts)
+        hams = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        ovps = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        evals = np.zeros((nk, self.nbasis), dtype=float)
+        evecs = np.zeros((nk, self.nbasis, self.nbasis), dtype=complex)
+        for ik, k in enumerate(kpts):
+            hams[ik], ovps[ik], evals[ik], evecs[ik] = self.HSE_k(
+                tuple(k), convention=convention
             )
+        return hams, ovps, evals, evecs
+    
+    def get_hamR(self, R):
+        return self.H[self.Rdict[tuple(R)]]
 
-            # up up
-            for iR in range(self.ncell):
-                self.H[iR, ::2, ::2] = HR[iR, 0, :, :] + \
-                    1j * HR_imag[iR, 0, :, :]
-                # up down
-                self.H[iR, ::2, 1::2] = HR[iR, 2, :, :] + 1j * (
-                    HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
-                )
-                # down up
-                self.H[iR, 1::2, ::2] = HR[iR, 2, :, :] - 1j * (
-                    HR[iR, 3, :, :] + HR_imag[iR, 2, :, :]
-                )
-                # down down
-                self.H[iR, 1::2, 1::2] = HR[iR, 1, :, :] + \
-                    1j * HR_imag[iR, 1, :, :]
-        else:  # collinear
-            HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
-            for iR in range(0, self.ncell):
-                for ispin in range(lib.SpinP_switch + 1):
-                    for iorb in range(lib.T_NumOrbs):
-                        HR[iR, ispin, iorb, :] = asarray(
-                            ffi, lib.HR[iR][ispin][iorb], norb
-                        )
-
-            self.H = np.zeros(
-                [self.ncell, lib.T_NumOrbs, lib.T_NumOrbs], dtype=complex
-            )
-
-            # up up
-            for iR in range(self.ncell):
-                self.H[iR, :, :] = HR[iR, self.spin, :, :]
-        self.efermi = lib.ChemP * Ha
-        self.H *= Ha
-
-        SR = np.zeros([self.ncell, lib.T_NumOrbs, lib.T_NumOrbs])
-        for iR in range(0, self.ncell):
-            for iorb in range(lib.T_NumOrbs):
-                SR[iR, iorb, :] = asarray(ffi, lib.SR[iR][iorb], norb)
-        self.S = SR # np.kron(SR, np.eye(2))
-        print("Loading from scfout file OK!")
 
 def test():
     openmx = OpenmxWrapper(
