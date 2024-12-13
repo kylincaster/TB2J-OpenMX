@@ -3,7 +3,16 @@ import argparse
 from TB2J.versioninfo import print_license
 from TB2J_OpenMX import gen_exchange_openmx
 import sys
-
+import numpy
+def set_threads(n_threads = 1):
+    from os import environ
+    N_THREADS = str(n_threads)
+    environ['OMP_NUM_THREADS'] = N_THREADS
+    environ['OPENBLAS_NUM_THREADS'] = N_THREADS
+    environ['MKL_NUM_THREADS'] = N_THREADS
+    environ['VECLIB_MAXIMUM_THREADS'] = N_THREADS
+    environ['NUMEXPR_NUM_THREADS'] = N_THREADS
+    
 def run_openmx2J():
     print_license()
     print("\n")
@@ -93,7 +102,7 @@ def run_openmx2J():
     )
 
     args = parser.parse_args()
-    
+    set_threads(args.np)
     if args.elements is None:
         parser.print_help()
         #print("Please input the magnetic elements, e.g. --elements Fe Ni")
@@ -111,6 +120,7 @@ def run_openmx2J():
     if args.elements is None:
         print("Please input the magnetic elements, e.g. --elements Fe Ni")
         exit()
+
     gen_exchange_openmx(
         path='./',
         prefix=args.prefix,

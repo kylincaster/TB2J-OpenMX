@@ -441,6 +441,8 @@ class OpenMXParser:
             "S": self.S,
             "atoms": self.atoms,
         }
+        if not os.path.isdir(self.outpath):
+            os.makedirs(self.outpath)
         datafile = os.path.join(self.outpath, name + ".pkl")
         print("write restart file to", datafile)
         with open(datafile, "wb") as f:
@@ -478,8 +480,8 @@ class OpenMXParser:
         if start_index == -1 or end_index == -1:
             raise RuntimeError("Cannot find paired tag `Definition.of.Atomic.Species`")
 
-        if (end_index - start_index) < len(symbols):
-            raise RuntimeError("Insufficient atomic species definitions in the file")
+        if (end_index - start_index) < len(set(symbols)):
+            raise RuntimeError(f"Insufficient atomic species definitions in the file at {start_index}-{end_index} for {len(set(symbols))} different symbols")
 
         # Parse PAOs for each element
         pao_definitions = {}
