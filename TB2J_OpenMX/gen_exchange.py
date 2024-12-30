@@ -21,9 +21,13 @@ def gen_exchange_openmx(path,
                  description=None,
                  restart=None):
     # path = output_path+"/Fe.pkl" test for read_data
-    if restart is not None and os.path.isfile(restart):
-        parser = OpenMXParser(None)
-        parser.read_data(restart)
+    if restart is not None:
+        if os.path.isfile(restart):
+            parser = OpenMXParser(None)
+            parser.read_data(restart)
+        else:
+            print(f"cannot find the restart file: `{restart}`")
+            exit(1)
     else:
         parser = OpenMXParser(path, prefix, outpath = output_path)
     if parser.non_collinear:

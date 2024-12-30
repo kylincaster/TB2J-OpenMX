@@ -116,6 +116,7 @@ class OpenMXParser:
             restart (Optional[str, dict]): restart file or the an dictionary stores the results
         """
         self.non_collinear: bool = False
+        self.outpath: Optional[str] = outpath
 
         # If a specific file is provided, read the data and set up the models
         if path is None:
@@ -124,17 +125,17 @@ class OpenMXParser:
         # Construct paths for required OpenMX output files
         fname = os.path.join(path, prefix + ".scfout")
         if not os.path.isfile(fname):
-            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fname}`")
+            print(f"Cannot find the OpenMX Hamilton file: `{fname}`")
+            exit(1)
 
         fxyzname = os.path.join(path, prefix + ".xyz")
         if not os.path.isfile(fxyzname):
-            raise RuntimeError(f"Cannot find the OpenMX Hamilton file: `{fxyzname}`")
+            print(f"Cannot find the OpenMX XYZ file: `{fxyzname}`")
+            exit(1)
 
         self.openmx_outfile: Optional[str] = os.path.join(path, prefix + ".out")
         if not os.path.isfile(self.openmx_outfile):
             self.openmx_outfile = None
-
-        self.outpath: Optional[str] = outpath
 
         # Parse the SCF output and atomic information
         self.parse_scfoutput(fname)
@@ -340,6 +341,7 @@ class OpenMXParser:
             atv_ijk.append(asarray(ffi, lib.atv_ijk[icell], 4))
         atv_ijk = np.array(atv_ijk)
         self.R = atv_ijk[:, 1:]
+        print(self.R)
         tv = []
         for i in range(4):
             tv.append(asarray(ffi, lib.tv[i], 4))
@@ -442,9 +444,13 @@ class OpenMXParser:
             "S": self.S,
             "atoms": self.atoms,
         }
-        if not os.path.isdir(self.outpath):
-            os.makedirs(self.outpath)
-        datafile = os.path.join(self.outpath, name + "_data.pkl")
+        outpath = self.outpath
+        if outpath is None:
+            outpath = "."
+        
+        if not os.path.isdir(outpath):
+            os.makedirs(outpath)
+        datafile = os.path.join(outpath, name + "_data.pkl")
         print("write restart file to", datafile)
         with open(datafile, "wb") as f:
             pickle.dump(data, f)
