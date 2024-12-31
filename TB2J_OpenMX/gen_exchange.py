@@ -19,7 +19,9 @@ def gen_exchange_openmx(path,
                  use_cache=False,
                  orb_decomposition=True,
                  description=None,
-                 restart=None):
+                 restart=None,
+                 restart_style="auto",
+                 ):
     # path = output_path+"/Fe.pkl" test for read_data
     if restart is not None:
         if os.path.isfile(restart):
@@ -29,7 +31,7 @@ def gen_exchange_openmx(path,
             print(f"cannot find the restart file: `{restart}`")
             exit(1)
     else:
-        parser = OpenMXParser(path, prefix, outpath = output_path)
+        parser = OpenMXParser(path, prefix, output_path = output_path, restart_style = restart_style)
     if parser.non_collinear:
         Exchange=ExchangeNCL
     else:
@@ -59,7 +61,7 @@ prefix: {prefix}
             description=description)
     exchange.run()
     print("\n")
-    print("All calculation finsihed. The results are in TB2J_results directory.")
+    print(f"All calculation finsihed. The results are in {output_path} directory.")
 
 if __name__=='__main__':
     gen_exchange_openmx(

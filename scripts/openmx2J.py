@@ -86,12 +86,22 @@ def run_openmx2J():
         default=1,
         type=int,
     )
+    
     parser.add_argument(
         "--description",
         help=
         "add description of the calculatiion to the xml file. Essential information, like the xc functional, U values, magnetic state should be given.",
         type=str,
-        default="Calculated with TB2J.\n")
+        default="Calculated with TB2J.\n"
+    )
+    
+    parser.add_argument(
+        "--restart-style",
+        help=
+        "The style to store Hamiltonian in the restart file: full, sparse, auto or skip. Default: auto",
+        type=str,
+        default="auto"
+    )
 
     parser.add_argument(
         "-D",
@@ -117,9 +127,9 @@ def run_openmx2J():
     args = parser.parse_args()
     set_threads(args.threads)
     if args.elements is None:
+        print("Please input the magnetic elements, e.g. --elements Fe Ni")
         parser.print_help()
-        #print("Please input the magnetic elements, e.g. --elements Fe Ni")
-        sys.exit()
+        exit(1)
     
     include_orbs = {}
     for element in args.elements:
@@ -129,10 +139,12 @@ def run_openmx2J():
             include_orbs[elem] = orb
         else:
             include_orbs[element] = None
-
-    if args.elements is None:
-        print("Please input the magnetic elements, e.g. --elements Fe Ni")
-        exit()
+    
+    style = args.restart_style.lower()
+    valid_styles =  ["full", "sparse", "auto"]
+    if style not in valid_styles:
+        print(f"invalid restart style: {style}, only valid is {valid_styles}")
+        exit(1)
 
     gen_exchange_openmx(
         path='./',
@@ -150,7 +162,9 @@ def run_openmx2J():
         np=args.np,
         exclude_orbs=args.exclude_orbs,
         orb_decomposition=args.orb_decomposition,
-        restart = args.restart)
+        restart = args.restart,
+        restart_style = args.restart_style,
+        )
 
 if __name__ == "__main__":
     run_openmx2J()

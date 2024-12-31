@@ -10,7 +10,15 @@ from TB2J_OpenMX.cmod._scfout_parser import ffi, lib
 from ase.data import atomic_numbers
 import pickle
 from typing import Optional
+from scipy.sparse import csr_array
 
+def sizeof_fmt(num, suffix="B"):
+    num = float(num)
+    for unit in ("", "Ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi"):
+        if abs(num) < 1024.0:
+            return f"{num:3.1f} {unit}{suffix}"
+        num /= 1024.0
+    return f"{num:.1f} Yi{suffix}"
 
 def validate_element(element_name: str) -> str:
     """Validate if the element name exists in the atomic numbers set."""
@@ -98,12 +106,31 @@ def asarray(ffi, ptr, length):
 
 
 class OpenMXParser:
+    """
+    A Parser to read OpenMX Hamiltonian and overlap matrices.
+
+    Attributes:
+        H (np.ndarray[float64]): Hamiltonian matrices for each lattice vector R.
+        S (np.ndarray[float64]): Overlap matrices for each lattice vector R.
+        R (np.ndarray[int]): Array of lattice vectors R.
+        atoms (ase.Atoms): ase.Atoms for OpenMX systems
+        natom (int): number of atoms in the lattice
+        HR_n_nonzeros (np.ndarray[int, 1]): The number of nonzeros PAO neighbors for each atoms
+        HR_nonzeros (List[np.ndarray[int, 2]]): The list for nonzeros PAO neighbors for each atoms. 
+            the 1st row is the nonzero index and 2st row is the length of consecutive sequence
+        norbs (np.ndarray[int]): number of PAOs in for each atoms in OpenMX system
+        non_collinear (bool): Whether a DFT calculation with non_collinear Hamiltonian
+        output (Optional[str]): The path to write the Restart Hamiltonian file
+        restart_style (str): The style to write down restart Hamiltonina file: full, sparse and auto
+        basis (List[PAO]): a list to contain all atom basis, including both spin-up and spin-down
+    """
     def __init__(
         self, 
         path: str, 
         prefix: str = "openmx", 
-        outpath: Optional[str] = None, 
+        output_path: str = "TB2J_results", 
         allow_non_spin_polarized: bool = False,
+        restart_style: str = "auto",
     ) -> None:
         """
         Initialize the OpenMXParser class.
@@ -111,13 +138,14 @@ class OpenMXParser:
         Args:
             path (str): Path to the OpenMX files or a specific pickle dump.
             prefix (str): Prefix for OpenMX output files. Default is "openmx".
-            outpath (Optional[str]): Path to save output data. Default is None.
+            output_path (Optional[str]): Path to dump Hamiltonian file. Default is None.
             allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
-            restart (Optional[str, dict]): restart file or the an dictionary stores the results
+            restart_style (str): Switch to control the style of Hamiltonian file, using `full`, `sparse`, `auto` or `skip`. Default is `auto`
         """
         self.non_collinear: bool = False
-        self.outpath: Optional[str] = outpath
-
+        self.output_path: str = output_path
+        self.restart_style: str = restart_style
+        self.HR_nonzeros = None
         # If a specific file is provided, read the data and set up the models
         if path is None:
             return
@@ -153,33 +181,65 @@ class OpenMXParser:
         self.set_models(allow_non_spin_polarized)
 
         # Dump data if an output path is provided
-        if outpath is not None:
+        if self.restart_style != "skip":
             self.dump_data(prefix)
     
-    def read_data(self, restart: str, allow_non_spin_polarized: bool = False) -> None:
+    def read_data(self, restart: Optional[str], allow_non_spin_polarized: bool = False) -> None:
         """
         Load serialized data from a pickle file and update instance attributes.
 
         Args:
-            restart (str): Path to the pickle file containing serialized data or a dictionary contained the data
+            restart (Optional[str, dict]): Path to the pickle file containing serialized data or a dictionary contained the data
             allow_non_spin_polarized (bool): Whether to allow non-spin-polarized calculations. Default is False.
         """
         if isinstance(restart, str):
             with open(restart, "rb") as f:
                 data = pickle.load(f)
-                print(data.keys())
-                self.__dict__.update(data)
         elif isinstance(restart, dict):
-            self.__dict__.update(restart)
+            data = restart
         else:
-            raise RuntimeError(f"Unkown restart {type(restart)}: {restart}")
-
+            raise RuntimeError(f"Unknown restart type {type(restart)}: {restart}")
+        
+        for k, v in data.items():
+            if not k.startswith("__"):
+                self.__dict__[k] = v
+        
+        n_spin = self.SpinP_switch + 1
+        self.norb = norb = len(self.basis) // 2
+        self.natom = natom = len(self.atoms)
+        
+        if data.get("__sparse_flag", False):
+            print(f"Read spare Hamiltonin file from {restart}")
+            sp_S, sp_H = data["__sp_S"], data["__sp_H"]
+            ncell = len(self.R)
+            self.S = np.zeros((ncell, norb, norb))
+            self.H = np.zeros((4, ncell, norb, norb))
+            S = self.S.reshape(-1, norb)
+            H = self.H.reshape(4, -1, norb)
+            for i in range(natom):
+                nonzeros = np.empty((self.HR_n_nonzeros[i],), dtype = int)
+                jj = 0
+                for j, n in self.HR_nonzeros[i]:
+                    nonzeros[jj:jj+n] = range(j, j+n)
+                    jj += n
+                S[nonzeros, self.norbs_index[i]:self.norbs_index[i+1]] = sp_S[i]
+                H[:n_spin, nonzeros, self.norbs_index[i]:self.norbs_index[i+1]] = sp_H[i]
+        else:
+            # full style
+            print(f"Read full Hamiltonin file from {restart}")
+            if self.SpinP_switch == 1:
+                H = np.empty((4, *self.H[0].shape))
+                H[0] = self.H[0]
+                H[1] = self.H[1]
+                H[2:,:] = 0
+                self.H = H
+            
         # Determine if the calculation is non-collinear
         if getattr(self, 'SpinP_switch', 0) == 3:
             self.non_collinear = True
         
         self.set_models(allow_non_spin_polarized)
-        
+    
     def set_models(self, allow_non_spin_polarized: bool) -> None:
         """
         Set up the models based on the SpinP_switch parameter.
@@ -249,7 +309,7 @@ class OpenMXParser:
         """
         return self.tmodels[spin]
 
-    def norbs_to_basis(self, atoms: Atoms, norbs: list[int]) -> None:
+    def norbs_to_basis(self, atoms: Atoms, norbs: np.ndarray[int]) -> None:
         """
         Generate basis set for the given atoms and number of orbitals.
 
@@ -270,7 +330,7 @@ class OpenMXParser:
             self.basis = basis
         print(f"Generate total {len(self.basis)} basis")
 
-    def gen_basis_by_number(self, atoms: Atoms, norbs: list[int]) -> list[tuple[str, str, str]]:
+    def gen_basis_by_number(self, atoms: Atoms, norbs: np.ndarray[int]) -> list[tuple[str, str, str]]:
         """
         Generate the basis set based on the number of orbitals.
 
@@ -320,11 +380,11 @@ class OpenMXParser:
 
         fnan = asarray(ffi, lib.FNAN, self.natom + 1)
 
-        natn = []
+        natn = [None]
         for iatom in range(self.natom):
             natn.append(asarray(ffi, lib.natn[iatom + 1], fnan[iatom + 1] + 1))
 
-        ncn = []
+        ncn = [None]
         for iatom in range(self.natom):
             ncn.append(asarray(ffi, lib.ncn[iatom + 1], fnan[iatom + 1] + 1))
         # atv
@@ -341,7 +401,6 @@ class OpenMXParser:
             atv_ijk.append(asarray(ffi, lib.atv_ijk[icell], 4))
         atv_ijk = np.array(atv_ijk)
         self.R = atv_ijk[:, 1:]
-        print(self.R)
         tv = []
         for i in range(4):
             tv.append(asarray(ffi, lib.tv[i], 4))
@@ -360,14 +419,34 @@ class OpenMXParser:
         self.positions = np.copy(np.array(Gxyz)[:, 1:4]) * Bohr
 
         self.MP = np.copy(asarray(ffi, lib.MP, self.natom + 1)[1:])
+        self.SpinP_switch = lib.SpinP_switch
 
         self.norb = lib.T_NumOrbs
         norb = self.norb
-        self.SpinP_switch = lib.SpinP_switch
-
+        
+        # get the non-zero position for an matrix
+        norbs = self.norbs
+        self.norbs_index = norbs_index = np.cumsum(np.pad(norbs, (1, 0), "constant"))
+        self.HR_nonzeros = []
+        HR_n_nonzeros = []
+        for II in range(self.natom):
+            ct_AN = II + 1
+            ct_natn = natn[ct_AN]
+            ct_ncn  = ncn[ct_AN]
+            nonzeros = []
+            n_nonzeros = 0
+            for h_AN in range(fnan[ct_AN] + 1):
+                Gh_AN_minus = ct_natn[h_AN] - 1 #
+                iR = ct_ncn[h_AN]
+                nonzeros.append((iR*norb + norbs_index[Gh_AN_minus], norbs[Gh_AN_minus]))
+                n_nonzeros += norbs[Gh_AN_minus]
+            HR_n_nonzeros.append(n_nonzeros)
+            self.HR_nonzeros.append(np.asarray(nonzeros))
+        self.HR_n_nonzeros = np.asarray(HR_n_nonzeros)
+        
         if self.SpinP_switch == 3:
             self.non_collinear = True
-
+        
         if self.non_collinear:
             HR = np.zeros([self.ncell, 4, lib.T_NumOrbs, lib.T_NumOrbs])
             for iR in range(0, self.ncell):
@@ -426,6 +505,89 @@ class OpenMXParser:
         lib.free_scfout()
 
     def dump_data(self, name: str = "openmx") -> str:
+        if not os.path.isdir(self.output_path):
+            os.makedirs(self.output_path)
+        pklfile = os.path.join(self.output_path, name + "_restart.pkl")
+        
+        if self.restart_style == "auto":
+            n_elems = np.prod(self.S)
+            n_nonzeros = np.count_nonzero(self.S)
+            if float(n_nonzeros) / n_elems < 0.3 and n_nonzeros > 800000:
+                self.dump_HRs_sparse(pklfile)
+            else:
+                self.dump_HRs_sparse(pklfile)
+        elif self.restart_style == "full":
+            self.dump_HRs_full(pklfile)
+        elif self.restart_style == "sparse":
+            self.dump_HRs_sparse(pklfile)
+        else:
+            raise ValueError(f"Invalid restart style {self.restart_style}")
+        
+        return pklfile
+    
+    def calc_HR_nonzeros(self):
+        n_PAOs = self.norb
+        S = self.S.reshape(-1, n_PAOs)
+        self.HR_nonzeros = []
+        self.HR_n_nonzeros = np.empty((self.natom,), dtype=int)
+        for i in range(self.natom):
+            a = S[:, self.norbs_index[i]:self.norbs_index[i+1]]
+            nonzeros_index = np.nonzero(np.any(a != 0.0, axis=1))[0]
+            idx = np.r_[0, np.where(np.diff(nonzeros_index) != 1)[0]+1, len(nonzeros_index)]
+            HR_nonzeros = [(nonzeros_index[idx[i]], idx[i+1]-idx[i]) for i in range(len(idx)-1)]
+            self.HR_n_nonzeros[i] = len(nonzeros_index)
+            self.HR_nonzeros.append(np.asarray(HR_nonzeros))
+            
+    
+    def dump_HRs_sparse(self, pklfile: str = "openmx.pkl") -> None:
+        if self.HR_nonzeros is None:
+            self.calc_HR_nonzeros()
+        
+        n_PAOs = self.norb
+        n_spin = self.SpinP_switch + 1
+        S = self.S.reshape(-1, n_PAOs)
+        H = self.H.reshape(self.H.shape[0],-1,n_PAOs)
+            
+        sp_S = []
+        sp_H = []
+        n_total_nonzeros = 0
+        for i in range(self.natom):
+            n_total_nonzeros += self.HR_n_nonzeros[i]*(self.norbs[i])
+            nonzeros = np.empty((self.HR_n_nonzeros[i],), dtype = int)
+            jj = 0
+            for j, n in self.HR_nonzeros[i]:
+                nonzeros[jj:jj+n] = range(j, j+n)
+                jj += n
+            sp_S.append(S[nonzeros, self.norbs_index[i]:self.norbs_index[i+1]])
+            sp_H.append(H[:n_spin, nonzeros, self.norbs_index[i]:self.norbs_index[i+1]])
+            
+            #not_Sel = ~np.isin(np.arange(S.shape[0]), nonzeros)
+            #n_err = np.count_nonzero(S[not_Sel, self.norbs_index[i]:self.norbs_index[i+1]])
+            #if n_err != 0:
+            #    raise RuntimeError(f"invalid HR_nonzeros struct with missing nonzeros {n_err}")
+        
+        sparse_rate = 100*float(n_total_nonzeros) / np.prod(S.shape)
+        
+        data = {
+            "__sparse_flag": True,
+            "basis": self.basis,
+            "efermi": self.efermi,
+            "SpinP_switch": self.SpinP_switch,
+            "__sp_H": sp_H,
+            "R": self.R,
+            "__sp_S": sp_S,
+            "HR_nonzeros": self.HR_nonzeros,
+            "HR_n_nonzeros": self.HR_n_nonzeros,
+            "norbs_index": self.norbs_index,
+            "atoms": self.atoms,
+        }
+        with open(pklfile, "wb") as f:
+            pickle.dump(data, f)
+
+        file_size = sizeof_fmt(os.stat(pklfile).st_size)
+        print(f"write sparse HRs, S and R to {pklfile} with size: {file_size} sparse rate: {sparse_rate:.2f}%%")
+
+    def dump_HRs_full(self, pklfile: str = "openmx.pkl") -> None:
         """
         Serialize the parsed data into a pickle file for later use.
 
@@ -435,27 +597,30 @@ class OpenMXParser:
         Returns:
         str: Path to the serialized pickle file.
         """
+        # save the memory usage
+        if self.SpinP_switch == 1:
+            HRs = (self.H[0], self.H[1])
+            #print(np.count_nonzero(self.H[0]), np.count_nonzero(self.H[1]), np.count_nonzero(self.H[2]), np.count_nonzero(self.H[3]))
+        else:
+            HRs = self.H
+        
         data = {
+            "__sparse_flag": False,
             "basis": self.basis,
             "efermi": self.efermi,
             "SpinP_switch": self.SpinP_switch,
-            "H": self.H,
+            "H": HRs,
             "R": self.R,
             "S": self.S,
             "atoms": self.atoms,
         }
-        outpath = self.outpath
-        if outpath is None:
-            outpath = "."
         
-        if not os.path.isdir(outpath):
-            os.makedirs(outpath)
-        datafile = os.path.join(outpath, name + "_data.pkl")
-        print("write restart file to", datafile)
-        with open(datafile, "wb") as f:
+        with open(pklfile, "wb") as f:
             pickle.dump(data, f)
-        return datafile
-
+            
+        file_size = sizeof_fmt(os.stat(pklfile).st_size)
+        print(f"write full HRs, S and R to {pklfile} with size: {file_size}")
+        
     def basis_from_output_file(self, atoms: Atoms) -> list[tuple[str, str, str]]:
         """
         Parse the basis set configuration from a OpenMX  file and construct the basis set.
@@ -520,7 +685,7 @@ class OpenMXParser:
             print(f"{tag} `{pao_input_s[symbol]}`[{len(basis)//2}]: ", end="")
             for i in range(0, len(basis), 2):
                 print(basis[i][1], end=" ")
-            print("\n")
+            print("")
 
             self.basis.extend(basis)
 
